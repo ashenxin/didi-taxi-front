@@ -1,0 +1,143 @@
+:root {
+  --bg: #f4f6fa;
+  --card: #fff;
+  --text: #111827;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --brand: #ea580c;
+  --brand-2: #f97316;
+  --ok: #15803d;
+  --err: #b91c1c;
+  --mono: ui-monospace, Menlo, Monaco, Consolas, monospace;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  color: var(--text);
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+}
+
+#app {
+  min-height: 100svh;
+}
+
+.page {
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  background: rgba(255, 255, 255, 0.92);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--brand), var(--brand-2));
+}
+
+.brand__title {
+  font-weight: 700;
+  font-size: 17px;
+}
+
+.topbar__meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.content {
+  flex: 1;
+  width: min(640px, 100%);
+  margin: 0 auto;
+  padding: 16px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+}
+
+.card h2 {
+  margin: 0 0 10px;
+  font-size: 16px;
+}
+
+.muted {
+  color: var(--muted);
+  line-height: 1.55;
+  margin: 0;
+}
+
+.muted.small {
+  font-size: 13px;
+  margin-top: 10px;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 13px;
+  word-break: break-all;
+  margin: 0;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: #f3f4f6;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.btn {
+  margin-top: 8px;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--brand), var(--brand-2));
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.ok {
+  color: var(--ok);
+  font-size: 14px;
+  margin-top: 10px;
+}
+
+.err {
+  color: var(--err);
+  font-size: 14px;
+  margin-top: 10px;
+}

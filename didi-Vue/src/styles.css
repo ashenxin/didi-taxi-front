@@ -1,0 +1,125 @@
+:root {
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color: #111827;
+  background-color: #f3f4f6;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f3f4f6;
+}
+
+.layout-root {
+  min-height: 100vh;
+}
+
+.layout-aside {
+  background: #111827;
+  color: #fff;
+  border-right: 1px solid #1f2937;
+}
+
+.logo {
+  height: 60px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  font-weight: 600;
+  border-bottom: 1px solid #1f2937;
+}
+
+.layout-header {
+  height: 60px;
+  background: #fff;
+  border-bottom: 1px solid #e5e7eb;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 20px;
+}
+
+.header-user {
+  flex-shrink: 0;
+  font-size: 14px;
+}
+
+.header-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.layout-main {
+  padding: 20px;
+}
+
+.page-card {
+  border-radius: 12px;
+}
+
+.toolbar-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.meta-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.meta-item {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.meta-label {
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 6px;
+}
+
+.meta-value {
+  font-size: 14px;
+  color: #111827;
+  font-weight: 500;
+}
+
+/* 侧栏「换队审核」与待审数字同一行、垂直居中（避免 el-badge 绝对定位错位） */
+.menu-item-with-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 1em;
+}
+
+.menu-item-with-badge__label {
+  flex: 1;
+  min-width: 0;
+}
+
+.menu-pending-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  min-width: 1.25rem;
+  height: 1.125rem;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  color: #451a03;
+  background: #fbbf24;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.35);
+}
