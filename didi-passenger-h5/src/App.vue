@@ -1,7 +1,7 @@
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8080').replace(/\/$/, '')
+import { API_BASE_URL, clearToken, getToken, postJson, setToken } from './api'
 
 const CITY_NAME_MAP = {
   '330100': '杭州'
@@ -13,7 +13,6 @@ const PRODUCT_NAME_MAP = {
 }
 
 const fixed = reactive({
-  passengerId: 1,
   provinceCode: '330000',
   cityCode: '330100',
   productCode: 'ECONOMY',
@@ -36,6 +35,28 @@ const lastRequest = ref(null)
 const lastResponse = ref(null)
 const lastError = ref(null)
 
+const authed = ref(!!getToken())
+const authTab = ref('sms')
+const phone = ref('13800138000')
+const password = ref('')
+const smsCode = ref('')
+const smsSending = ref(false)
+const smsHint = ref('')
+
+function resetLoginInputs() {
+  password.value = ''
+  smsCode.value = ''
+  smsHint.value = ''
+}
+
+function maybeDropToLogin(err) {
+  const msg = err?.message || String(err || '')
+  if (msg.includes('未登录') || msg.includes('登录已失效') || msg.includes('未授权')) {
+    authed.value = false
+    resetLoginInputs()
+  }
+}
+
 const cityName = computed(() => CITY_NAME_MAP[fixed.cityCode] || fixed.cityCode)
 const productName = computed(() => PRODUCT_NAME_MAP[fixed.productCode] || fixed.productCode)
 
@@ -52,7 +73,6 @@ async function placeOrder() {
   lastResponse.value = null
 
   const payload = {
-    passengerId: fixed.passengerId,
     provinceCode: fixed.provinceCode,
     cityCode: fixed.cityCode,
     productCode: fixed.productCode,
@@ -62,30 +82,85 @@ async function placeOrder() {
   lastRequest.value = payload
 
   try {
-    const resp = await fetch(`${API_BASE_URL}/app/api/v1/orders`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    })
-
-    const text = await resp.text()
-    let json
-    try {
-      json = text ? JSON.parse(text) : {}
-    } catch {
-      json = { raw: text }
-    }
-
-    if (!resp.ok || json.code !== 200) {
-      throw new Error(json.msg || `请求失败（${resp.status}）`)
-    }
-    lastResponse.value = json.data
+    lastResponse.value = await postJson('/app/api/v1/orders', payload)
   } catch (e) {
     lastError.value = e?.message || String(e)
+    maybeDropToLogin(e)
   } finally {
     loading.value = false
   }
 }
+
+async function sendSms() {
+  smsHint.value = ''
+  smsSending.value = true
+  const startedAt = Date.now()
+  try {
+    await postJson('/app/api/v1/auth/sms/send', { phone: phone.value })
+    smsHint.value = '验证码已发送（本地 mock 会在后端日志打印 code）'
+  } catch (e) {
+    smsHint.value = e?.message || String(e)
+  } finally {
+    // 发送过快会让用户没感知，至少展示 1s 的 loading
+    const elapsed = Date.now() - startedAt
+    const remain = 1000 - elapsed
+    if (remain > 0) {
+      await new Promise((r) => setTimeout(r, remain))
+    }
+    smsSending.value = false
+  }
+}
+
+async function loginSms() {
+  loading.value = true
+  lastError.value = null
+  try {
+    const data = await postJson('/app/api/v1/auth/login-sms', { phone: phone.value, code: smsCode.value })
+    if (data?.accessToken) {
+      setToken(data.accessToken)
+      authed.value = true
+      resetLoginInputs()
+    }
+  } catch (e) {
+    lastError.value = e?.message || String(e)
+    // 验证码错误/过期/频控：清空验证码，避免用户重复提交旧值
+    smsCode.value = ''
+  } finally {
+    loading.value = false
+  }
+}
+
+async function loginPassword() {
+  loading.value = true
+  lastError.value = null
+  try {
+    const data = await postJson('/app/api/v1/auth/login-password', { phone: phone.value, password: password.value })
+    if (data?.accessToken) {
+      setToken(data.accessToken)
+      authed.value = true
+      resetLoginInputs()
+    }
+  } catch (e) {
+    lastError.value = e?.message || String(e)
+    // 密码错误/提示改用验证码等：清空密码，避免继续提交旧值
+    password.value = ''
+  } finally {
+    loading.value = false
+  }
+}
+
+function logout() {
+  clearToken()
+  authed.value = false
+  lastError.value = null
+  lastResponse.value = null
+  lastRequest.value = null
+  resetLoginInputs()
+}
+
+watch(authed, (v) => {
+  if (!v) resetLoginInputs()
+})
 </script>
 
 <template>
@@ -99,6 +174,64 @@ async function placeOrder() {
     </header>
 
     <main class="content">
+      <section class="card" v-if="!authed">
+        <div class="card__title">登录</div>
+        <div class="card__desc">
+          首期支持两种方式：手机号验证码登录（登录即注册）与手机号密码登录。登录成功后会保存 token 并用于后续请求。
+        </div>
+
+        <div class="tabs">
+          <button class="tab" :class="{ 'tab--active': authTab === 'sms' }" @click="authTab = 'sms'">验证码登录</button>
+          <button class="tab" :class="{ 'tab--active': authTab === 'pwd' }" @click="authTab = 'pwd'">密码登录</button>
+        </div>
+
+        <div class="form">
+          <div class="field">
+            <div class="field__label">手机号</div>
+            <div class="field__value">
+              <input class="input" v-model.trim="phone" placeholder="13800138000" />
+            </div>
+          </div>
+
+          <template v-if="authTab === 'sms'">
+            <div class="field">
+              <div class="field__label">验证码</div>
+              <div class="field__value field__row">
+                <input class="input" v-model.trim="smsCode" placeholder="123456" />
+                <button class="btn" :disabled="smsSending" @click="sendSms">
+                  <span v-if="!smsSending">发送验证码</span>
+                  <span v-else>发送中…</span>
+                </button>
+              </div>
+              <div class="tip tip--full tip--center" v-if="smsHint">{{ smsHint }}</div>
+            </div>
+            <button class="cta" :disabled="loading" @click="loginSms">
+              <span v-if="!loading">验证码登录</span>
+              <span v-else>登录中…</span>
+            </button>
+          </template>
+
+          <template v-else>
+            <div class="field">
+              <div class="field__label">密码</div>
+              <div class="field__value">
+                <input class="input" type="password" v-model="password" placeholder="请输入密码" />
+              </div>
+              <div class="tip">若该手机号未设置密码，会提示改用验证码登录。</div>
+            </div>
+            <button class="cta" :disabled="loading" @click="loginPassword">
+              <span v-if="!loading">密码登录</span>
+              <span v-else>登录中…</span>
+            </button>
+          </template>
+
+          <div class="result__block" v-if="lastError">
+            <div class="badge badge--danger">提示</div>
+            <div class="mono">{{ lastError }}</div>
+          </div>
+        </div>
+      </section>
+
       <section class="map">
         <div class="map__grid" />
         <div class="map__overlay" />
@@ -155,10 +288,14 @@ async function placeOrder() {
           </div>
         </div>
 
-        <button class="cta" :disabled="loading" @click="placeOrder">
+        <div class="field__row" style="margin-top: 14px;">
+          <button class="cta" :disabled="loading || !authed" @click="placeOrder">
           <span v-if="!loading">立即下单</span>
           <span v-else>正在下单…</span>
-        </button>
+          </button>
+          <button class="btn btn--ghost" v-if="authed" @click="logout">退出登录</button>
+        </div>
+        <div class="tip" v-if="!authed">请先登录后再下单。</div>
 
         <div class="result" v-if="lastRequest || lastResponse || lastError">
           <div class="result__title">调试信息</div>
