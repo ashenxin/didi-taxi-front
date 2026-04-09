@@ -1,13 +1,11 @@
-import { shallowRef } from 'vue'
-import { fetchMenus } from '../api/authApi'
+import { adminMenus, loadAdminMenus, clearAdminSession } from '../stores/adminSession'
+import { resolveAdminView } from './adminViewRegistry'
 
 /** 与 router/index 中布局路由 name 一致 */
 export const ADMIN_LAYOUT_NAME = 'admin-shell'
 
 /** 当前用户菜单树（仅 visible 过滤前Raw数据，侧栏自行再滤） */
-export const adminMenuTree = shallowRef([])
-
-const viewModules = import.meta.glob('../views/**/*.vue')
+export const adminMenuTree = adminMenus
 
 const addedRouteNames = []
 
@@ -27,11 +25,10 @@ function fullPathToChildSegment(fullPathNormalized) {
 
 function resolvePage(componentPath) {
   if (!componentPath) return null
-  const key = `../views/${componentPath}`
-  const loader = viewModules[key]
+  const loader = resolveAdminView(componentPath)
   if (loader) return loader
-  console.warn('[admin] 未知视图文件:', key)
-  return () => import('../views/auth/NoMenuView.vue')
+  console.warn('[admin] 未在白名单中的视图标识:', componentPath)
+  return resolveAdminView('auth/NoMenuView.vue') || (() => import('../features/auth/views/NoMenuView.vue'))
 }
 
 function firstRoutablePath(nodes) {
@@ -88,28 +85,28 @@ const extraRouteDefs = [
     childPath: 'orders/:orderNo',
     fullPath: '/orders/:orderNo',
     props: true,
-    loader: () => import('../views/order/OrderDetailView.vue')
+    loader: () => import('../features/order/views/OrderDetailView.vue')
   },
   {
     name: 'capacityCarsByDriver',
     childPath: 'capacity/drivers/:driverId/cars',
     fullPath: '/capacity/drivers/:driverId/cars',
     props: true,
-    loader: () => import('../views/capacity/CarListView.vue')
+    loader: () => import('../features/capacity/views/CarListView.vue')
   },
   {
     name: 'pricingFareRuleNew',
     childPath: 'pricing/fare-rules/new',
     fullPath: '/pricing/fare-rules/new',
     props: { isNew: true },
-    loader: () => import('../views/pricing/FareRuleEditView.vue')
+    loader: () => import('../features/pricing/views/FareRuleEditView.vue')
   },
   {
     name: 'pricingFareRuleEdit',
     childPath: 'pricing/fare-rules/:id',
     fullPath: '/pricing/fare-rules/:id',
     props: (route) => ({ id: route.params.id, isNew: false }),
-    loader: () => import('../views/pricing/FareRuleEditView.vue')
+    loader: () => import('../features/pricing/views/FareRuleEditView.vue')
   }
 ]
 
@@ -138,8 +135,8 @@ function removeAllDynamicRoutes(router) {
  * @param {import('vue-router').Router} router
  */
 export async function registerAdminMenuRoutes(router) {
-  const menus = await fetchMenus()
-  adminMenuTree.value = Array.isArray(menus) ? menus : []
+  await loadAdminMenus({ force: true })
+  adminMenus.value = Array.isArray(adminMenus.value) ? adminMenus.value : []
 
   removeAllDynamicRoutes(router)
 
@@ -168,7 +165,7 @@ export async function registerAdminMenuRoutes(router) {
     router.addRoute(ADMIN_LAYOUT_NAME, {
       path: 'welcome',
       name: 'admin-welcome',
-      component: () => import('../views/auth/NoMenuView.vue'),
+      component: () => import('../features/auth/views/NoMenuView.vue'),
       meta: { title: '无菜单' }
     })
     addedRouteNames.push('admin-welcome')
@@ -195,5 +192,5 @@ export async function registerAdminMenuRoutes(router) {
  */
 export function clearAdminMenuRoutes(router) {
   removeAllDynamicRoutes(router)
-  adminMenuTree.value = []
+  clearAdminSession()
 }

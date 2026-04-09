@@ -19,7 +19,7 @@
 </template>
 
 <script setup>
-import AdminSidebarMenu from './AdminSidebarMenu.vue'
+defineOptions({ name: 'AdminSidebarMenu' })
 
 defineProps({
   items: { type: Array, default: () => [] },

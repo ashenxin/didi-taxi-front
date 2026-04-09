@@ -28,33 +28,20 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AdminSidebarMenu from '../components/AdminSidebarMenu.vue'
-import { clearAdminToken } from '../api/http'
-import { fetchMe } from '../api/authApi'
-import { usePendingTeamChange } from '../composables/usePendingTeamChange'
+import { logoutAdmin, adminMe, refreshPendingTeamChangeCount, pendingTeamChangeCount, loadAdminMe } from '../stores/adminSession'
 import { adminMenuTree } from '../router/dynamicRoutes'
 import { teardownAdminMenuRoutes } from '../router'
 
 const route = useRoute()
 const router = useRouter()
-const { pendingTeamChangeCount, refresh: refreshPendingTeamChange } = usePendingTeamChange()
 
-const displayName = ref('')
-
-async function loadMe() {
-  try {
-    const me = await fetchMe()
-    displayName.value = me?.displayName || me?.username || ''
-  } catch {
-    displayName.value = ''
-  }
-}
+const displayName = computed(() => adminMe.value?.displayName || adminMe.value?.username || '')
 
 function logout() {
-  clearAdminToken()
-  displayName.value = ''
+  logoutAdmin()
   teardownAdminMenuRoutes()
   router.replace({ path: '/login' })
 }
@@ -95,15 +82,15 @@ const activeMenu = computed(() => {
 })
 
 onMounted(() => {
-  refreshPendingTeamChange()
-  loadMe()
+  refreshPendingTeamChangeCount({ force: true })
+  loadAdminMe({ force: true }).catch(() => {})
 })
 
 watch(
   () => route.fullPath,
   () => {
-    refreshPendingTeamChange()
-    loadMe()
+    refreshPendingTeamChangeCount()
+    loadAdminMe().catch(() => {})
   }
 )
 </script>

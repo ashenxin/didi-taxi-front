@@ -1,7 +1,8 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, reactive, ref } from 'vue'
 
-import { API_BASE_URL, clearToken, getToken, postJson, setToken } from './api'
+import { API_BASE_URL, postJson } from './api/http'
+import { useAuth } from './features/auth/useAuth'
 
 const CITY_NAME_MAP = {
   '330100': '杭州'
@@ -35,27 +36,22 @@ const lastRequest = ref(null)
 const lastResponse = ref(null)
 const lastError = ref(null)
 
-const authed = ref(!!getToken())
-const authTab = ref('sms')
-const phone = ref('13800138000')
-const password = ref('')
-const smsCode = ref('')
-const smsSending = ref(false)
-const smsHint = ref('')
-
-function resetLoginInputs() {
-  password.value = ''
-  smsCode.value = ''
-  smsHint.value = ''
-}
-
-function maybeDropToLogin(err) {
-  const msg = err?.message || String(err || '')
-  if (msg.includes('未登录') || msg.includes('登录已失效') || msg.includes('未授权')) {
-    authed.value = false
-    resetLoginInputs()
-  }
-}
+const {
+  authed,
+  authTab,
+  phone,
+  password,
+  smsCode,
+  smsSending,
+  smsHint,
+  authLoading,
+  authError,
+  sendSms,
+  loginSms,
+  loginPassword,
+  logout,
+  maybeDropToLogin
+} = useAuth()
 
 const cityName = computed(() => CITY_NAME_MAP[fixed.cityCode] || fixed.cityCode)
 const productName = computed(() => PRODUCT_NAME_MAP[fixed.productCode] || fixed.productCode)
@@ -91,76 +87,12 @@ async function placeOrder() {
   }
 }
 
-async function sendSms() {
-  smsHint.value = ''
-  smsSending.value = true
-  const startedAt = Date.now()
-  try {
-    await postJson('/app/api/v1/auth/sms/send', { phone: phone.value })
-    smsHint.value = '验证码已发送（本地 mock 会在后端日志打印 code）'
-  } catch (e) {
-    smsHint.value = e?.message || String(e)
-  } finally {
-    // 发送过快会让用户没感知，至少展示 1s 的 loading
-    const elapsed = Date.now() - startedAt
-    const remain = 1000 - elapsed
-    if (remain > 0) {
-      await new Promise((r) => setTimeout(r, remain))
-    }
-    smsSending.value = false
-  }
-}
-
-async function loginSms() {
-  loading.value = true
-  lastError.value = null
-  try {
-    const data = await postJson('/app/api/v1/auth/login-sms', { phone: phone.value, code: smsCode.value })
-    if (data?.accessToken) {
-      setToken(data.accessToken)
-      authed.value = true
-      resetLoginInputs()
-    }
-  } catch (e) {
-    lastError.value = e?.message || String(e)
-    // 验证码错误/过期/频控：清空验证码，避免用户重复提交旧值
-    smsCode.value = ''
-  } finally {
-    loading.value = false
-  }
-}
-
-async function loginPassword() {
-  loading.value = true
-  lastError.value = null
-  try {
-    const data = await postJson('/app/api/v1/auth/login-password', { phone: phone.value, password: password.value })
-    if (data?.accessToken) {
-      setToken(data.accessToken)
-      authed.value = true
-      resetLoginInputs()
-    }
-  } catch (e) {
-    lastError.value = e?.message || String(e)
-    // 密码错误/提示改用验证码等：清空密码，避免继续提交旧值
-    password.value = ''
-  } finally {
-    loading.value = false
-  }
-}
-
-function logout() {
-  clearToken()
-  authed.value = false
+function logoutAll() {
+  logout()
   lastError.value = null
   lastResponse.value = null
   lastRequest.value = null
-  resetLoginInputs()
 }
-
-watch(authed, (v) => {
-  if (!v) resetLoginInputs()
-})
 </script>
 
 <template>
@@ -205,8 +137,8 @@ watch(authed, (v) => {
               </div>
               <div class="tip tip--full tip--center" v-if="smsHint">{{ smsHint }}</div>
             </div>
-            <button class="cta" :disabled="loading" @click="loginSms">
-              <span v-if="!loading">验证码登录</span>
+            <button class="cta" :disabled="authLoading" @click="loginSms">
+              <span v-if="!authLoading">验证码登录</span>
               <span v-else>登录中…</span>
             </button>
           </template>
@@ -219,15 +151,15 @@ watch(authed, (v) => {
               </div>
               <div class="tip">若该手机号未设置密码，会提示改用验证码登录。</div>
             </div>
-            <button class="cta" :disabled="loading" @click="loginPassword">
-              <span v-if="!loading">密码登录</span>
+            <button class="cta" :disabled="authLoading" @click="loginPassword">
+              <span v-if="!authLoading">密码登录</span>
               <span v-else>登录中…</span>
             </button>
           </template>
 
-          <div class="result__block" v-if="lastError">
+          <div class="result__block" v-if="authError">
             <div class="badge badge--danger">提示</div>
-            <div class="mono">{{ lastError }}</div>
+            <div class="mono">{{ authError }}</div>
           </div>
         </div>
       </section>
@@ -293,7 +225,7 @@ watch(authed, (v) => {
           <span v-if="!loading">立即下单</span>
           <span v-else>正在下单…</span>
           </button>
-          <button class="btn btn--ghost" v-if="authed" @click="logout">退出登录</button>
+          <button class="btn btn--ghost" v-if="authed" @click="logoutAll">退出登录</button>
         </div>
         <div class="tip" v-if="!authed">请先登录后再下单。</div>
 

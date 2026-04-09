@@ -1,169 +1,55 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 
-import { API_BASE_URL, clearToken, getJson, getToken, postJson, setToken } from './api'
+import { API_BASE_URL, getJson } from './api/http'
+import { useAuth } from './features/auth/useAuth'
 
-const authed = ref(!!getToken())
-const authTab = ref('sms') // sms | pwd
-const showRegister = ref(false)
-
-const phone = ref('13900000000')
-const password = ref('')
-const smsCode = ref('')
-
-const loading = ref(false)
-const smsSending = ref(false)
-const smsHint = ref('')
-const lastError = ref('')
+const {
+  authed,
+  authTab,
+  showRegister,
+  phone,
+  password,
+  smsCode,
+  authLoading,
+  smsSending,
+  smsHint,
+  authError,
+  openRegister,
+  backToLogin,
+  sendSms,
+  loginSms,
+  loginPassword,
+  registerSms,
+  registerPassword,
+  logout,
+  maybeDropToLogin,
+} = useAuth()
 
 const assignedLoading = ref(false)
 const assigned = ref([])
-
-function resetInputs() {
-  password.value = ''
-  smsCode.value = ''
-  smsHint.value = ''
-  lastError.value = ''
-}
-
-function openRegister() {
-  showRegister.value = true
-  resetInputs()
-}
-
-function backToLogin() {
-  showRegister.value = false
-  resetInputs()
-}
-
-function maybeDropToLogin(err) {
-  const msg = err?.message || String(err || '')
-  if (msg.includes('未登录') || msg.includes('登录已失效') || msg.includes('未授权')) {
-    authed.value = false
-    resetInputs()
-  }
-}
+const assignedError = ref('')
 
 const pageTitle = computed(() => (authed.value ? '司机工作台' : '司机端登录'))
 
-async function sendSms() {
-  smsHint.value = ''
-  lastError.value = ''
-  smsSending.value = true
-  const startedAt = Date.now()
-  try {
-    await postJson('/driver/api/v1/auth/sms/send', { phone: phone.value })
-    smsHint.value = '验证码已发送（本地 mock 会在后端日志打印 code）'
-  } catch (e) {
-    smsHint.value = e?.message || String(e)
-  } finally {
-    const elapsed = Date.now() - startedAt
-    const remain = 1000 - elapsed
-    if (remain > 0) await new Promise((r) => setTimeout(r, remain))
-    smsSending.value = false
-  }
-}
-
-async function loginSms() {
-  loading.value = true
-  lastError.value = ''
-  try {
-    const data = await postJson('/driver/api/v1/auth/login-sms', { phone: phone.value, code: smsCode.value })
-    if (data?.accessToken) {
-      setToken(data.accessToken)
-      authed.value = true
-      resetInputs()
-    }
-  } catch (e) {
-    lastError.value = e?.message || String(e)
-    smsCode.value = ''
-  } finally {
-    loading.value = false
-  }
-}
-
-async function loginPassword() {
-  loading.value = true
-  lastError.value = ''
-  try {
-    const data = await postJson('/driver/api/v1/auth/login-password', { phone: phone.value, password: password.value })
-    if (data?.accessToken) {
-      setToken(data.accessToken)
-      authed.value = true
-      resetInputs()
-    }
-  } catch (e) {
-    lastError.value = e?.message || String(e)
-    password.value = ''
-  } finally {
-    loading.value = false
-  }
-}
-
-async function registerSms() {
-  loading.value = true
-  lastError.value = ''
-  try {
-    const data = await postJson('/driver/api/v1/auth/register-sms', { phone: phone.value, code: smsCode.value })
-    if (data?.accessToken) {
-      setToken(data.accessToken)
-      authed.value = true
-      resetInputs()
-    }
-  } catch (e) {
-    lastError.value = e?.message || String(e)
-    smsCode.value = ''
-  } finally {
-    loading.value = false
-  }
-}
-
-async function registerPassword() {
-  loading.value = true
-  lastError.value = ''
-  try {
-    const data = await postJson('/driver/api/v1/auth/register-password', {
-      phone: phone.value,
-      code: smsCode.value,
-      password: password.value,
-    })
-    if (data?.accessToken) {
-      setToken(data.accessToken)
-      authed.value = true
-      resetInputs()
-    }
-  } catch (e) {
-    lastError.value = e?.message || String(e)
-    password.value = ''
-    smsCode.value = ''
-  } finally {
-    loading.value = false
-  }
-}
-
 async function loadAssigned() {
   assignedLoading.value = true
-  lastError.value = ''
+  assignedError.value = ''
   try {
     assigned.value = (await getJson('/driver/api/v1/orders/assigned')) || []
   } catch (e) {
-    lastError.value = e?.message || String(e)
+    assignedError.value = e?.message || String(e)
     maybeDropToLogin(e)
   } finally {
     assignedLoading.value = false
   }
 }
 
-function logout() {
-  clearToken()
-  authed.value = false
+function logoutAll() {
   assigned.value = []
-  resetInputs()
+  assignedError.value = ''
+  logout()
 }
-
-watch(authed, (v) => {
-  if (!v) resetInputs()
-})
 </script>
 
 <template>
@@ -209,12 +95,12 @@ watch(authed, (v) => {
               <div class="tip tip--full tip--center" v-if="smsHint">{{ smsHint }}</div>
             </div>
 
-            <button class="cta" :disabled="loading" v-if="!showRegister" @click="loginSms">
-              <span v-if="!loading">验证码登录</span>
+            <button class="cta" :disabled="authLoading" v-if="!showRegister" @click="loginSms">
+              <span v-if="!authLoading">验证码登录</span>
               <span v-else>登录中…</span>
             </button>
-            <button class="cta" :disabled="loading" v-else @click="registerSms">
-              <span v-if="!loading">验证码注册</span>
+            <button class="cta" :disabled="authLoading" v-else @click="registerSms">
+              <span v-if="!authLoading">验证码注册</span>
               <span v-else>注册中…</span>
             </button>
           </template>
@@ -242,17 +128,17 @@ watch(authed, (v) => {
               </div>
             </template>
 
-            <button class="cta" :disabled="loading" v-if="!showRegister" @click="loginPassword">
-              <span v-if="!loading">密码登录</span>
+            <button class="cta" :disabled="authLoading" v-if="!showRegister" @click="loginPassword">
+              <span v-if="!authLoading">密码登录</span>
               <span v-else>登录中…</span>
             </button>
-            <button class="cta" :disabled="loading" v-else @click="registerPassword">
-              <span v-if="!loading">密码注册</span>
+            <button class="cta" :disabled="authLoading" v-else @click="registerPassword">
+              <span v-if="!authLoading">密码注册</span>
               <span v-else>注册中…</span>
             </button>
           </template>
 
-          <div class="err" v-if="lastError">{{ lastError }}</div>
+          <div class="err" v-if="authError">{{ authError }}</div>
 
           <div class="footer-actions">
             <template v-if="!showRegister">
@@ -277,12 +163,12 @@ watch(authed, (v) => {
           <button class="btn" :disabled="assignedLoading" @click="loadAssigned">
             {{ assignedLoading ? '加载中…' : '拉取指派单' }}
           </button>
-          <button class="btn btn--ghost" @click="logout">退出登录</button>
+          <button class="btn btn--ghost" @click="logoutAll">退出登录</button>
         </div>
 
         <div class="tip" v-if="assigned && assigned.length === 0">暂无指派单（order 服务未启动时可能返回 502）。</div>
         <pre class="mono pre" v-if="assigned && assigned.length">{{ JSON.stringify(assigned, null, 2) }}</pre>
-        <div class="err" v-if="lastError">{{ lastError }}</div>
+        <div class="err" v-if="assignedError">{{ assignedError }}</div>
       </section>
     </main>
   </div>

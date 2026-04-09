@@ -1,4 +1,5 @@
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8080'
+const DEFAULT_TIMEOUT_MS = 15_000
 
 export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || DEFAULT_BASE_URL).replace(/\/$/, '')
 
@@ -30,19 +31,47 @@ function redirectToLoginIfNeeded() {
   window.location.assign(`/login?redirect=${encodeURIComponent(path + q)}`)
 }
 
+function createApiError(message, extra = {}) {
+  const err = new Error(message)
+  err.name = 'ApiError'
+  Object.assign(err, extra)
+  return err
+}
+
+let unauthorizedHandler = null
+export function setUnauthorizedHandler(handler) {
+  unauthorizedHandler = typeof handler === 'function' ? handler : null
+}
+
 export async function requestJson(path, options = {}) {
   let resp
+  const { timeoutMs, ...fetchOptions } = options || {}
+  let timeoutId = null
+  let controller = null
+  const signal = fetchOptions.signal
+  if (!signal) {
+    controller = new AbortController()
+    fetchOptions.signal = controller.signal
+    const ms = typeof timeoutMs === 'number' ? timeoutMs : DEFAULT_TIMEOUT_MS
+    timeoutId = setTimeout(() => controller.abort(), ms)
+  }
   try {
     resp = await fetch(`${API_BASE_URL}${path}`, {
-      ...options,
+      ...fetchOptions,
       headers: {
-        ...authHeaders(),
-        ...(options.headers || {})
+        ...(fetchOptions.headers || {}),
+        ...authHeaders()
       }
     })
   } catch (error) {
+    if (timeoutId) clearTimeout(timeoutId)
     // 浏览器网络层异常（如后端未启动/断网）默认是英文，统一降级中文提示
-    throw new Error('网络异常，请检查后端服务是否启动')
+    if (error?.name === 'AbortError') {
+      throw createApiError('请求超时，请稍后重试', { code: 'TIMEOUT', httpStatus: 0, cause: error })
+    }
+    throw createApiError('网络异常，请检查后端服务是否启动', { httpStatus: 0, cause: error })
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId)
   }
   let result
   try {
@@ -50,18 +79,27 @@ export async function requestJson(path, options = {}) {
     result = text ? JSON.parse(text) : {}
   } catch (error) {
     if (!resp.ok) {
-      throw new Error(`服务异常（${resp.status}），请稍后重试`)
+      throw createApiError(`服务异常（${resp.status}），请稍后重试`, { httpStatus: resp.status, cause: error })
     }
-    throw new Error('响应解析失败，请稍后重试')
+    throw createApiError('响应解析失败，请稍后重试', { httpStatus: resp.status, cause: error })
   }
   // admin-api：HTTP 状态码与 body.code 一致（400/404/500/502/504 等），错误时仍以 JSON 返回 ResponseVo
   if (resp.status === 401 || result.code === 401) {
     clearAdminToken()
+    try {
+      unauthorizedHandler?.()
+    } catch {
+      /* ignore */
+    }
     redirectToLoginIfNeeded()
-    throw new Error(result.msg || '未登录或登录已失效')
+    throw createApiError(result.msg || '未登录或登录已失效', { code: 401, httpStatus: resp.status, data: result.data })
   }
   if (!resp.ok || result.code !== 200) {
-    throw new Error(result.msg || `服务异常（${resp.status}），请稍后重试`)
+    throw createApiError(result.msg || `服务异常（${resp.status}），请稍后重试`, {
+      code: typeof result.code === 'undefined' ? undefined : result.code,
+      httpStatus: resp.status,
+      data: result.data
+    })
   }
   return result.data
 }
@@ -77,10 +115,10 @@ export async function requestJsonPost(path, body, options = {}) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...authHeaders(),
-      ...(options.headers || {})
+      ...(options.headers || {}),
+      ...authHeaders()
     },
-    body: body === undefined ? '{}' : JSON.stringify(body)
+    body: body === undefined ? undefined : JSON.stringify(body)
   })
 }
 
@@ -90,10 +128,10 @@ export async function requestJsonPut(path, body, options = {}) {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
-      ...authHeaders(),
-      ...(options.headers || {})
+      ...(options.headers || {}),
+      ...authHeaders()
     },
-    body: body === undefined ? '{}' : JSON.stringify(body)
+    body: body === undefined ? undefined : JSON.stringify(body)
   })
 }
 
@@ -102,8 +140,14 @@ export async function requestJsonDelete(path, options = {}) {
     ...options,
     method: 'DELETE',
     headers: {
-      ...authHeaders(),
-      ...(options.headers || {})
+      ...(options.headers || {}),
+      ...authHeaders()
     }
   })
 }
+
+// --- 统一命名（便于与 H5 两端对齐） ---
+export const getJson = (path, options) => requestJson(path, { ...(options || {}), method: 'GET' })
+export const postJson = (path, body, options) => requestJsonPost(path, body, options)
+export const putJson = (path, body, options) => requestJsonPut(path, body, options)
+export const deleteJson = (path, options) => requestJsonDelete(path, options)

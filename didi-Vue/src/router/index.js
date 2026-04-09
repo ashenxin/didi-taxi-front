@@ -1,8 +1,9 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { getAdminToken } from '../api/http'
-import LoginView from '../views/auth/LoginView.vue'
-import AdminShellLayout from '../layouts/AdminShellLayout.vue'
 import { registerAdminMenuRoutes, clearAdminMenuRoutes } from './dynamicRoutes'
+
+const LoginView = () => import('../features/auth/views/LoginView.vue')
+const AdminShellLayout = () => import('../layouts/AdminShellLayout.vue')
 
 const routes = [
   {
@@ -16,6 +17,10 @@ const routes = [
     name: 'admin-shell',
     component: AdminShellLayout,
     children: []
+  },
+  {
+    path: '/:pathMatch(.*)*',
+    redirect: '/'
   }
 ]
 
