@@ -1,4 +1,5 @@
 import { onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { showToast } from 'vant'
 
 const STORAGE_KEY = 'didi_driver_active_order_no'
 const POLL_MS = 2500
@@ -48,6 +49,11 @@ export function useDriverActiveTrip(driverId, { getJson, postJson, maybeDropToLo
       const st = row?.status
       if (st === 5 || st === 6) {
         stopPollTimer()
+        showToast({
+          type: st === 5 ? 'success' : 'fail',
+          message: st === 5 ? '订单已完成' : '订单已取消',
+        })
+        clearActiveTrip()
       }
     } catch (e) {
       tripError.value = e?.message || String(e)

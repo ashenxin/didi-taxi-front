@@ -221,6 +221,10 @@ body {
   margin-top: 12px;
 }
 
+.assign-multi-hint {
+  margin-bottom: 8px;
+}
+
 .mono-tight {
   font-family: var(--mono);
   font-size: 11px;

@@ -4,7 +4,12 @@ import { showConfirmDialog, showToast } from 'vant'
 
 import { API_BASE_URL, getJson, postJson } from './api/http'
 import { useAuth } from './features/auth/useAuth'
-import { formatOrderStatus, orderStatusCode, passengerCanCancel } from './utils/orderStatus'
+import {
+  formatOrderStatus,
+  isTerminalOrderStatus,
+  orderStatusCode,
+  passengerCanCancel,
+} from './utils/orderStatus'
 
 const themeVars = {
   primaryColor: '#1989fa',
@@ -74,6 +79,28 @@ const showCancelOrder = computed(() => {
   return passengerCanCancel(c)
 })
 
+/**
+ * 立即下单是否应禁用：有「跟踪中」订单且状态未达终态（非 FINISHED/CANCELLED），或状态尚未拉回。
+ * 仅刷新页面会清空本地跟踪态；若服务端仍有进行中单，依赖 POST 409 兜底。
+ */
+const placeOrderBlock = computed(() => {
+  if (!trackingOrderNo.value) {
+    return { disabled: false, hint: '' }
+  }
+  const c = displayStatusCode.value
+  if (c === undefined || c === null) {
+    return { disabled: true, hint: '正在同步订单状态，暂不可重复下单' }
+  }
+  if (isTerminalOrderStatus(c)) {
+    return { disabled: false, hint: '' }
+  }
+  return { disabled: true, hint: '当前有进行中的订单，请等待完单或取消后再下单' }
+})
+
+const placeOrderDisabled = computed(
+  () => loading.value || (authed.value && placeOrderBlock.value.disabled),
+)
+
 const cancelLoading = ref(false)
 const cancelReason = ref('')
 
@@ -141,6 +168,10 @@ const summary = computed(() => ({
 }))
 
 async function placeOrder() {
+  if (authed.value && placeOrderBlock.value.disabled) {
+    showToast({ type: 'fail', message: placeOrderBlock.value.hint || '暂不可下单' })
+    return
+  }
   loading.value = true
   lastError.value = null
   lastResponse.value = null
@@ -160,6 +191,9 @@ async function placeOrder() {
     if (data?.orderNo) startOrderPoll(data.orderNo)
   } catch (e) {
     lastError.value = e?.message || String(e)
+    if (e?.code === 409) {
+      showToast({ type: 'fail', message: e.message || '您已有进行中的订单' })
+    }
     maybeDropToLogin(e)
   } finally {
     loading.value = false
@@ -354,6 +388,16 @@ async function cancelOrder() {
             :text="`跟踪中 ${trackingOrderNo.slice(-8)} · ${liveStatusText}`"
             :scrollable="false"
           />
+          <van-notice-bar
+            v-if="authed && placeOrderBlock.disabled && placeOrderBlock.hint"
+            class="section-gap"
+            left-icon="warning-o"
+            color="#ed6a0c"
+            background="#fff7e8"
+            :text="placeOrderBlock.hint"
+            wrapable
+            :scrollable="false"
+          />
 
           <div class="map-wrap section-gap">
             <section class="map" aria-label="路线示意">
@@ -412,10 +456,16 @@ async function cancelOrder() {
               block
               round
               :loading="loading"
-              :disabled="!authed"
+              :disabled="!authed || placeOrderDisabled"
               @click="placeOrder"
             >
-              {{ loading ? '正在下单…' : '立即下单' }}
+              {{
+                loading
+                  ? '正在下单…'
+                  : placeOrderBlock.disabled && authed
+                    ? '进行中订单未完成'
+                    : '立即下单'
+              }}
             </van-button>
             <van-button
               v-if="authed"
@@ -490,9 +540,8 @@ async function cancelOrder() {
               maxlength="120"
               show-word-limit
             />
-            <div class="order-actions order-actions--end">
+            <div v-if="showCancelOrder" class="order-actions order-actions--end">
               <van-button
-                v-if="showCancelOrder"
                 size="small"
                 round
                 type="danger"
@@ -501,9 +550,6 @@ async function cancelOrder() {
                 @click="cancelOrder"
               >
                 取消订单
-              </van-button>
-              <van-button size="small" round plain type="primary" @click="stopOrderPoll">
-                停止跟踪
               </van-button>
             </div>
             <p v-if="showCancelOrder" class="cancel-hint">

@@ -1,11 +1,12 @@
 <script setup>
 import { computed, ref, unref } from 'vue'
+import { showToast } from 'vant'
 
 import { API_BASE_URL, getJson, getToken, postJson } from './api/http'
 import { useAuth } from './features/auth/useAuth'
 import { useDriverActiveTrip } from './features/trip/useDriverActiveTrip'
 import { parseDriverIdFromToken } from './utils/jwt'
-import { formatAssignedItemStatus } from './utils/orderStatus'
+import { formatAssignedItemStatus, isPendingAssignListStatus } from './utils/orderStatus'
 import { nextTripAction, tripStatusLabel } from './utils/tripStatus'
 
 const themeVars = {
@@ -53,6 +54,11 @@ const pageTitle = computed(() => (authed.value ? '司机工作台' : '司机登�
 
 const driverId = computed(() => parseDriverIdFromToken(getToken()))
 
+/** 与 order-service / driver-api 业务码 409 对齐（如服务中单再派、并发冲突） */
+function isConflictError(e) {
+  return e?.code === 409 || e?.httpStatus === 409
+}
+
 const trip = useDriverActiveTrip(driverId, {
   getJson,
   postJson,
@@ -90,9 +96,17 @@ async function loadAssigned() {
   assignedLoading.value = true
   assignedError.value = ''
   try {
-    assigned.value = (await getJson('/driver/api/v1/orders/assigned')) || []
+    const raw = (await getJson('/driver/api/v1/orders/assigned')) || []
+    assigned.value = raw.filter((item) => isPendingAssignListStatus(item?.status))
+    const tripSt = trip.activeTrip?.status
+    if (tripSt === 5 || tripSt === 6) {
+      trip.clearActiveTrip()
+    }
   } catch (e) {
     assignedError.value = e?.message || String(e)
+    if (isConflictError(e)) {
+      showToast({ type: 'fail', message: e?.message || '操作冲突' })
+    }
     maybeDropToLogin(e)
   } finally {
     assignedLoading.value = false
@@ -126,8 +140,12 @@ async function acceptOrder(orderNo) {
     await postJson(`/driver/api/v1/orders/${encodeURIComponent(orderNo)}/accept`, { driverId: id })
     await loadAssigned()
     trip.beginFollowingOrder(orderNo)
+    showToast({ type: 'success', message: '已接单' })
   } catch (e) {
     assignedError.value = e?.message || String(e)
+    if (isConflictError(e)) {
+      showToast({ type: 'fail', message: e?.message || '操作冲突' })
+    }
     maybeDropToLogin(e)
   } finally {
     acceptLoading.value = null
@@ -202,7 +220,11 @@ async function logoutAll() {
           <div class="hero-strip__text">
             <div class="hero-strip__title">{{ authed ? '听单 · 行程 · 完单' : '司机账号登录' }}</div>
             <div class="hero-strip__sub">
-              {{ authed ? '上线后可刷新指派单；行程面板与订单服务状态同步' : '支持验证码 / 密码；注册需短信校验' }}
+              {{
+                authed
+                  ? '可有多笔待确认；确认一单后其余待确认单由系统取消。服务中单不再派新单（乘客侧 409）'
+                  : '支持验证码 / 密码；注册需短信校验'
+              }}
             </div>
           </div>
         </div>
@@ -348,6 +370,17 @@ async function logoutAll() {
             </div>
           </div>
 
+          <van-notice-bar
+            v-if="trip.activeTripOrderNo && (!assigned || assigned.length === 0)"
+            left-icon="info-o"
+            color="#1989fa"
+            background="#ecf5ff"
+            text="暂无新指派单。已接单～行程中（ACCEPTED～STARTED）不会再派新单。"
+            wrapable
+            :scrollable="false"
+            class="section-gap"
+          />
+
           <van-empty
             v-if="assigned && assigned.length === 0 && !trip.activeTripOrderNo"
             image="search"
@@ -355,6 +388,16 @@ async function logoutAll() {
           />
 
           <div v-else-if="assigned && assigned.length > 0" class="section-gap">
+            <van-notice-bar
+              v-if="assigned.length > 1"
+              left-icon="volume-o"
+              color="#ed6a0c"
+              background="#fff7e8"
+              text="当前有多笔待确认；确认其中一单后，其余 ASSIGNED / 待确认 订单将由系统自动取消。"
+              wrapable
+              :scrollable="false"
+              class="assign-multi-hint"
+            />
             <van-card v-for="item in assigned" :key="item.orderNo" class="assign-card">
               <template #title>
                 <span class="mono-tight">{{ item.orderNo }}</span>

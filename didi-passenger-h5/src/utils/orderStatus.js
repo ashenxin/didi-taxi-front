@@ -44,3 +44,9 @@ export function passengerCanCancel(statusCode) {
   const c = statusCode == null ? null : Number(statusCode)
   return c === 0 || c === 1 || c === 2 || c === 7
 }
+
+/** 已完单或已取消，可再次下单（与后端「进行中」定义一致） */
+export function isTerminalOrderStatus(statusCode) {
+  const c = statusCode == null ? null : Number(statusCode)
+  return c === 5 || c === 6
+}
