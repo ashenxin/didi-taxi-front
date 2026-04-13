@@ -102,6 +102,14 @@ export function useAuth() {
     resetInputs()
   }
 
+  /** 验证码 ↔ 密码登录切换（单次只展示一种方式） */
+  function switchLoginMode(mode) {
+    if (mode !== 'sms' && mode !== 'pwd') return
+    authTab.value = mode
+    authError.value = null
+    smsHint.value = ''
+  }
+
   watch(authed, (v) => {
     if (!v) resetInputs()
   })
@@ -128,7 +136,8 @@ export function useAuth() {
     loginSms,
     loginPassword,
     logout,
-    maybeDropToLogin
+    maybeDropToLogin,
+    switchLoginMode,
   }
 }
 

@@ -1,16 +1,29 @@
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref } from 'vue'
+import { showConfirmDialog, showToast } from 'vant'
 
-import { API_BASE_URL, postJson } from './api/http'
+import { API_BASE_URL, getJson, postJson } from './api/http'
 import { useAuth } from './features/auth/useAuth'
+import { formatOrderStatus, orderStatusCode, passengerCanCancel } from './utils/orderStatus'
+
+const themeVars = {
+  primaryColor: '#1989fa',
+  successColor: '#07c160',
+  radiusMd: '12px',
+  buttonRadius: '999px',
+  cellGroupInsetPadding: '0 12px',
+  cellFontSize: '15px',
+  cellTextColor: '#323233',
+  navBarIconColor: '#1989fa',
+}
 
 const CITY_NAME_MAP = {
-  '330100': '杭州'
+  '330100': '杭州',
 }
 
 const PRODUCT_NAME_MAP = {
   ECONOMY: '快车',
-  COMFORT: '专车'
+  COMFORT: '专车',
 }
 
 const fixed = reactive({
@@ -18,23 +31,88 @@ const fixed = reactive({
   cityCode: '330100',
   productCode: 'ECONOMY',
   origin: {
-    name: '西湖景区',
-    address: '杭州市西湖区龙井路附近',
-    lat: 30.251612,
-    lng: 120.141275
+    name: '杭州火车东站',
+    address: '浙江省杭州市上城区全福桥路2号杭州东站',
   },
   dest: {
-    name: '杭州东站',
-    address: '杭州市上城区全福桥路',
-    lat: 30.292753,
-    lng: 120.21201
-  }
+    name: '龙翔桥地铁站',
+    address: '浙江省杭州市上城区湖滨街道龙翔桥地铁站',
+  },
 })
 
 const loading = ref(false)
 const lastRequest = ref(null)
 const lastResponse = ref(null)
 const lastError = ref(null)
+
+const trackingOrderNo = ref('')
+const liveOrderDetail = ref(null)
+let orderPollTimer = null
+const POLL_MS = 2000
+
+/** 仅反映 POST 下单接口返回体里的 status，不随后续轮询更新 */
+const createStatusText = computed(() => formatOrderStatus(lastResponse.value?.status))
+const liveStatusText = computed(() => formatOrderStatus(liveOrderDetail.value?.status))
+const liveStatusCode = computed(() => orderStatusCode(liveOrderDetail.value?.status))
+
+/**
+ * 主展示用状态：跟踪中同一单时以轮询为准；调试区第一行仍为「接口返回时」的固定快照。
+ */
+const displayOrderStatus = computed(() => {
+  const tracking = trackingOrderNo.value
+  if (tracking && liveOrderDetail.value?.orderNo === tracking) {
+    return liveOrderDetail.value.status
+  }
+  return lastResponse.value?.status
+})
+const displayStatusText = computed(() => formatOrderStatus(displayOrderStatus.value))
+const displayStatusCode = computed(() => orderStatusCode(displayOrderStatus.value))
+const showCancelOrder = computed(() => {
+  if (!trackingOrderNo.value) return false
+  const c = liveStatusCode.value
+  if (c === undefined || c === null) return true
+  return passengerCanCancel(c)
+})
+
+const cancelLoading = ref(false)
+const cancelReason = ref('')
+
+function stopPollTimer() {
+  if (orderPollTimer) {
+    clearInterval(orderPollTimer)
+    orderPollTimer = null
+  }
+}
+
+function stopOrderPoll() {
+  stopPollTimer()
+  trackingOrderNo.value = ''
+  liveOrderDetail.value = null
+}
+
+async function fetchOrderDetailOnce() {
+  if (!trackingOrderNo.value) return
+  try {
+    const data = await getJson('/app/api/v1/orders/' + encodeURIComponent(trackingOrderNo.value))
+    liveOrderDetail.value = data
+    const code = orderStatusCode(data?.status)
+    if (code === 5 || code === 6) {
+      stopPollTimer()
+    }
+  } catch (e) {
+    maybeDropToLogin(e)
+  }
+}
+
+function startOrderPoll(orderNo) {
+  stopOrderPoll()
+  if (!orderNo) return
+  trackingOrderNo.value = orderNo
+  fetchOrderDetailOnce()
+  orderPollTimer = setInterval(fetchOrderDetailOnce, POLL_MS)
+}
+
+onBeforeUnmount(() => stopPollTimer())
 
 const {
   authed,
@@ -50,18 +128,17 @@ const {
   loginSms,
   loginPassword,
   logout,
-  maybeDropToLogin
+  maybeDropToLogin,
+  switchLoginMode,
 } = useAuth()
 
 const cityName = computed(() => CITY_NAME_MAP[fixed.cityCode] || fixed.cityCode)
 const productName = computed(() => PRODUCT_NAME_MAP[fixed.productCode] || fixed.productCode)
 
-const summary = computed(() => {
-  return {
-    origin: `${fixed.origin.name}（${fixed.origin.lat}, ${fixed.origin.lng}）`,
-    dest: `${fixed.dest.name}（${fixed.dest.lat}, ${fixed.dest.lng}）`
-  }
-})
+const summary = computed(() => ({
+  origin: fixed.origin.address || fixed.origin.name,
+  dest: fixed.dest.address || fixed.dest.name,
+}))
 
 async function placeOrder() {
   loading.value = true
@@ -73,12 +150,14 @@ async function placeOrder() {
     cityCode: fixed.cityCode,
     productCode: fixed.productCode,
     origin: fixed.origin,
-    dest: fixed.dest
+    dest: fixed.dest,
   }
   lastRequest.value = payload
 
   try {
-    lastResponse.value = await postJson('/app/api/v1/orders', payload)
+    const data = await postJson('/app/api/v1/orders', payload)
+    lastResponse.value = data
+    if (data?.orderNo) startOrderPoll(data.orderNo)
   } catch (e) {
     lastError.value = e?.message || String(e)
     maybeDropToLogin(e)
@@ -88,177 +167,356 @@ async function placeOrder() {
 }
 
 function logoutAll() {
+  stopOrderPoll()
   logout()
   lastError.value = null
   lastResponse.value = null
   lastRequest.value = null
 }
+
+async function cancelOrder() {
+  const no = trackingOrderNo.value
+  if (!no) return
+  const c = liveStatusCode.value
+  if (c != null && !passengerCanCancel(c)) return
+  try {
+    await showConfirmDialog({
+      title: '取消订单',
+      message: '确定取消本单？司机已接单时取消将通知订单服务。',
+      confirmButtonText: '确定取消',
+      cancelButtonText: '再想想',
+      confirmButtonColor: '#ee0a24',
+    })
+  } catch {
+    return
+  }
+  cancelLoading.value = true
+  try {
+    await postJson(`/app/api/v1/orders/${encodeURIComponent(no)}/cancel`, {
+      cancelReason: cancelReason.value?.trim() || '乘客取消',
+    })
+    await fetchOrderDetailOnce()
+    showToast({ type: 'success', message: '已提交取消' })
+  } catch (e) {
+    maybeDropToLogin(e)
+    showToast({ type: 'fail', message: e?.message || String(e) })
+  } finally {
+    cancelLoading.value = false
+  }
+}
 </script>
 
 <template>
-  <div class="page">
-    <header class="topbar">
-      <div class="brand">
-        <div class="brand__dot" />
-        <div class="brand__title">乘客出行</div>
+  <van-config-provider :theme-vars="themeVars">
+    <div class="page page--passenger">
+      <van-nav-bar
+        class="app-nav"
+        title="乘客出行"
+        :border="false"
+        safe-area-inset-top
+      >
+        <template #right>
+          <span class="nav-eyebrow"> Demo · 东站→龙翔桥 </span>
+        </template>
+      </van-nav-bar>
+
+      <div class="hero-strip">
+        <div class="hero-strip__inner">
+          <div class="hero-strip__icon" aria-hidden="true">🚕</div>
+          <div class="hero-strip__text">
+            <div class="hero-strip__title">一键叫车 · 实时行程</div>
+            <div class="hero-strip__sub">登录后下单，订单状态将自动刷新直至完单或取消</div>
+          </div>
+        </div>
       </div>
-      <div class="topbar__meta">H5 Demo · 静态坐标</div>
-    </header>
 
-    <main class="content">
-      <section class="card" v-if="!authed">
-        <div class="card__title">登录</div>
-        <div class="card__desc">
-          首期支持两种方式：手机号验证码登录（登录即注册）与手机号密码登录。登录成功后会保存 token 并用于后续请求。
-        </div>
+      <main class="page-main page-main--grid">
+        <div>
+          <van-notice-bar
+            v-if="!authed"
+            left-icon="info-o"
+            text="登录后可下单；首期支持验证码与密码登录。"
+            wrapable
+            :scrollable="false"
+          />
 
-        <div class="tabs">
-          <button class="tab" :class="{ 'tab--active': authTab === 'sms' }" @click="authTab = 'sms'">验证码登录</button>
-          <button class="tab" :class="{ 'tab--active': authTab === 'pwd' }" @click="authTab = 'pwd'">密码登录</button>
-        </div>
-
-        <div class="form">
-          <div class="field">
-            <div class="field__label">手机号</div>
-            <div class="field__value">
-              <input class="input" v-model.trim="phone" placeholder="13800138000" />
-            </div>
-          </div>
-
-          <template v-if="authTab === 'sms'">
-            <div class="field">
-              <div class="field__label">验证码</div>
-              <div class="field__value field__row">
-                <input class="input" v-model.trim="smsCode" placeholder="123456" />
-                <button class="btn" :disabled="smsSending" @click="sendSms">
-                  <span v-if="!smsSending">发送验证码</span>
-                  <span v-else>发送中…</span>
-                </button>
+          <van-cell-group v-if="!authed" inset class="section-gap" :title="authTab === 'sms' ? '验证码登录' : '密码登录'">
+            <div v-if="authTab === 'sms'" class="auth-actions">
+              <van-field
+                v-model="phone"
+                label="手机号"
+                type="tel"
+                maxlength="11"
+                placeholder="请输入手机号"
+                clearable
+              />
+              <van-field
+                v-model="smsCode"
+                center
+                clearable
+                label="验证码"
+                placeholder="短信验证码"
+              >
+                <template #button>
+                  <van-button
+                    size="small"
+                    type="primary"
+                    :loading="smsSending"
+                    :disabled="smsSending"
+                    @click="sendSms"
+                  >
+                    {{ smsSending ? '发送中' : '发送验证码' }}
+                  </van-button>
+                </template>
+              </van-field>
+              <p v-if="smsHint" class="van-field__error-message auth-hint-center">
+                {{ smsHint }}
+              </p>
+              <div class="auth-submit-row">
+                <van-button
+                  class="auth-submit-btn"
+                  type="primary"
+                  native-type="button"
+                  :loading="authLoading"
+                  @click="loginSms"
+                >
+                  登录
+                </van-button>
               </div>
-              <div class="tip tip--full tip--center" v-if="smsHint">{{ smsHint }}</div>
+              <van-cell class="auth-mode-switch-cell" :border="false">
+                <template #title>
+                  <span class="auth-mode-hint">有固定密码？</span>
+                </template>
+                <template #value>
+                  <van-button size="small" plain hairline type="primary" native-type="button" @click="switchLoginMode('pwd')">
+                    切换密码登录
+                  </van-button>
+                </template>
+              </van-cell>
             </div>
-            <button class="cta" :disabled="authLoading" @click="loginSms">
-              <span v-if="!authLoading">验证码登录</span>
-              <span v-else>登录中…</span>
-            </button>
-          </template>
 
-          <template v-else>
-            <div class="field">
-              <div class="field__label">密码</div>
-              <div class="field__value">
-                <input class="input" type="password" v-model="password" placeholder="请输入密码" />
+            <div v-else class="auth-actions">
+              <van-field
+                v-model="phone"
+                label="手机号"
+                type="tel"
+                maxlength="11"
+                placeholder="请输入手机号"
+                clearable
+              />
+              <van-field
+                v-model="password"
+                type="password"
+                label="密码"
+                placeholder="请输入密码"
+              />
+              <p class="auth-tip">若该手机号未设置密码，会提示改用验证码登录。</p>
+              <div class="auth-submit-row">
+                <van-button
+                  class="auth-submit-btn"
+                  type="primary"
+                  native-type="button"
+                  :loading="authLoading"
+                  @click="loginPassword"
+                >
+                  登录
+                </van-button>
               </div>
-              <div class="tip">若该手机号未设置密码，会提示改用验证码登录。</div>
+              <van-cell class="auth-mode-switch-cell" :border="false">
+                <template #title>
+                  <span class="auth-mode-hint">收不到短信？</span>
+                </template>
+                <template #value>
+                  <van-button size="small" plain hairline type="primary" native-type="button" @click="switchLoginMode('sms')">
+                    切换验证码登录
+                  </van-button>
+                </template>
+              </van-cell>
             </div>
-            <button class="cta" :disabled="authLoading" @click="loginPassword">
-              <span v-if="!authLoading">密码登录</span>
-              <span v-else>登录中…</span>
-            </button>
-          </template>
 
-          <div class="result__block" v-if="authError">
-            <div class="badge badge--danger">提示</div>
-            <div class="mono">{{ authError }}</div>
+            <van-notice-bar
+              v-if="authError"
+              color="#ee0a24"
+              background="#fef0f0"
+              left-icon="warning-o"
+              :text="authError"
+              wrapable
+              :scrollable="false"
+            />
+          </van-cell-group>
+
+          <van-notice-bar
+            v-if="trackingOrderNo && authed && liveStatusText && liveStatusText !== '-'"
+            class="section-gap poll-status-bar"
+            left-icon="replay"
+            color="#1989fa"
+            background="#ecf5ff"
+            :text="`跟踪中 ${trackingOrderNo.slice(-8)} · ${liveStatusText}`"
+            :scrollable="false"
+          />
+
+          <div class="map-wrap section-gap">
+            <section class="map" aria-label="路线示意">
+              <div class="map__grid" />
+              <div class="map__overlay" />
+              <div class="pin pin--origin" :title="fixed.origin.name">
+                <div class="pin__label">起</div>
+              </div>
+              <div class="pin pin--dest" :title="fixed.dest.name">
+                <div class="pin__label">终</div>
+              </div>
+              <div class="route" aria-hidden="true" />
+              <div class="map__hint">
+                <div class="hint-row">
+                  <span class="hint-dot hint-dot--origin" />
+                  <span class="hint-text">{{ summary.origin }}</span>
+                </div>
+                <div class="hint-row">
+                  <span class="hint-dot hint-dot--dest" />
+                  <span class="hint-text">{{ summary.dest }}</span>
+                </div>
+              </div>
+            </section>
           </div>
         </div>
-      </section>
 
-      <section class="map">
-        <div class="map__grid" />
-        <div class="map__overlay" />
+        <div>
+          <van-cell-group inset title="确认行程">
+            <van-cell title="城市" :value="`${cityName}（${fixed.cityCode}）`" />
+            <van-cell title="产品线" :value="`${productName}（${fixed.productCode}）`" />
+            <van-cell title="起点">
+              <template #value>
+                <div class="cell-stack">
+                  <div class="cell-stack__title">{{ fixed.origin.name }}</div>
+                  <div class="cell-stack__sub">{{ fixed.origin.address }}</div>
+                </div>
+              </template>
+            </van-cell>
+            <van-cell title="终点">
+              <template #value>
+                <div class="cell-stack">
+                  <div class="cell-stack__title">{{ fixed.dest.name }}</div>
+                  <div class="cell-stack__sub">{{ fixed.dest.address }}</div>
+                </div>
+              </template>
+            </van-cell>
+          </van-cell-group>
 
-        <div class="pin pin--origin" :title="fixed.origin.name">
-          <div class="pin__label">起</div>
-        </div>
-        <div class="pin pin--dest" :title="fixed.dest.name">
-          <div class="pin__label">终</div>
-        </div>
+          <p class="hint-text-block">
+            起终点为中文地址；passenger-api 会地理编码并驾车规划预估价。
+          </p>
 
-        <div class="route" aria-hidden="true" />
-
-        <div class="map__hint">
-          <div class="hint-row">
-            <span class="hint-dot hint-dot--origin" />
-            <span class="hint-text">{{ summary.origin }}</span>
+          <div class="action-row">
+            <van-button
+              type="primary"
+              block
+              round
+              :loading="loading"
+              :disabled="!authed"
+              @click="placeOrder"
+            >
+              {{ loading ? '正在下单…' : '立即下单' }}
+            </van-button>
+            <van-button
+              v-if="authed"
+              round
+              plain
+              hairline
+              type="primary"
+              @click="logoutAll"
+            >
+              退出
+            </van-button>
           </div>
-          <div class="hint-row">
-            <span class="hint-dot hint-dot--dest" />
-            <span class="hint-text">{{ summary.dest }}</span>
-          </div>
-        </div>
-      </section>
+          <van-notice-bar
+            v-if="!authed"
+            class="notice-tight-top"
+            color="#ed6a0c"
+            background="#fff7e8"
+            left-icon="lock"
+            text="请先登录后再下单"
+          />
 
-      <section class="card">
-        <div class="card__title">确认行程</div>
-        <div class="card__desc">
-          点击下单会把坐标与城市信息发送到后端（`passenger-api`），用于路线规划 / 距离与 ETA 预估。
-        </div>
+          <van-cell-group v-if="lastRequest || lastResponse || lastError" inset title="调试信息" class="section-gap">
+            <van-notice-bar v-if="lastError" color="#ee0a24" background="#fef0f0" :text="`请求失败：${lastError}`" />
+            <van-cell v-if="lastResponse" title="下单响应">
+              <template #value>
+                <van-tag v-if="lastResponse?.orderNo" type="success" plain>成功</van-tag>
+              </template>
+              <template #label>
+                <div v-if="createStatusText" class="order-status-line order-status-line--muted">
+                  接口返回时状态（不随轮询更新）：
+                  <span :class="{ 'status-pending': orderStatusCode(lastResponse?.status) === 7 }">
+                    {{ createStatusText }}
+                  </span>
+                  <span v-if="orderStatusCode(lastResponse?.status) != null" class="status-code-muted">
+                    （code={{ orderStatusCode(lastResponse?.status) }}）
+                  </span>
+                </div>
+                <div v-if="displayStatusText && displayStatusText !== '-'" class="order-status-line">
+                  {{ trackingOrderNo && liveOrderDetail ? '轮询最新状态' : '当前展示状态' }}：
+                  <span :class="{ 'status-pending': displayStatusCode === 7 }">{{ displayStatusText }}</span>
+                  <span v-if="displayStatusCode != null" class="status-code-muted">
+                    （code={{ displayStatusCode }}）
+                  </span>
+                </div>
+              </template>
+            </van-cell>
+            <van-collapse v-if="lastRequest" :border="false" class="debug-collapse">
+              <van-collapse-item title="请求体" name="req">
+                <pre class="mono-block">{{ JSON.stringify(lastRequest, null, 2) }}</pre>
+                <p class="debug-endpoint-hint">POST {{ API_BASE_URL }}/app/api/v1/orders</p>
+              </van-collapse-item>
+            </van-collapse>
+          </van-cell-group>
 
-        <div class="form">
-          <div class="field">
-            <div class="field__label">城市</div>
-            <div class="field__value">{{ cityName }}（{{ fixed.cityCode }}）</div>
-          </div>
-          <div class="field">
-            <div class="field__label">产品线</div>
-            <div class="field__value">{{ productName }}（{{ fixed.productCode }}）</div>
-          </div>
-          <div class="field">
-            <div class="field__label">起点</div>
-            <div class="field__value">
-              <div class="place">{{ fixed.origin.name }}</div>
-              <div class="sub">{{ fixed.origin.address }}</div>
+          <van-cell-group v-if="trackingOrderNo && authed" inset title="订单进度" class="section-gap">
+            <van-cell title="轮询" :value="`约每 ${POLL_MS / 1000}s · 完单或取消后停止`" />
+            <van-cell title="订单号">
+              <template #value>
+                <span class="order-no-mono">{{ trackingOrderNo }}</span>
+              </template>
+            </van-cell>
+            <van-cell v-if="liveStatusText && liveStatusText !== '-'" title="状态">
+              <template #value>
+                <span :class="{ 'status-pending': liveStatusCode === 7 }">{{ liveStatusText }}</span>
+              </template>
+            </van-cell>
+            <van-field
+              v-if="showCancelOrder"
+              v-model="cancelReason"
+              label="取消原因"
+              placeholder="选填，不填则为「乘客取消」"
+              maxlength="120"
+              show-word-limit
+            />
+            <div class="order-actions order-actions--end">
+              <van-button
+                v-if="showCancelOrder"
+                size="small"
+                round
+                type="danger"
+                plain
+                :loading="cancelLoading"
+                @click="cancelOrder"
+              >
+                取消订单
+              </van-button>
+              <van-button size="small" round plain type="primary" @click="stopOrderPoll">
+                停止跟踪
+              </van-button>
             </div>
-          </div>
-          <div class="field">
-            <div class="field__label">终点</div>
-            <div class="field__value">
-              <div class="place">{{ fixed.dest.name }}</div>
-              <div class="sub">{{ fixed.dest.address }}</div>
-            </div>
-          </div>
+            <p v-if="showCancelOrder" class="cancel-hint">
+              已接单后仍可取消；司机已到达或行程开始后需按平台规则（后端可能拒绝）。
+            </p>
+          </van-cell-group>
         </div>
+      </main>
 
-        <div class="field__row" style="margin-top: 14px;">
-          <button class="cta" :disabled="loading || !authed" @click="placeOrder">
-          <span v-if="!loading">立即下单</span>
-          <span v-else>正在下单…</span>
-          </button>
-          <button class="btn btn--ghost" v-if="authed" @click="logoutAll">退出登录</button>
-        </div>
-        <div class="tip" v-if="!authed">请先登录后再下单。</div>
-
-        <div class="result" v-if="lastRequest || lastResponse || lastError">
-          <div class="result__title">调试信息</div>
-
-          <div class="result__block" v-if="lastError">
-            <div class="badge badge--danger">请求失败</div>
-            <div class="mono">{{ lastError }}</div>
-            <div class="tip">
-              提示：目前后端还没实现该接口时会返回 404。你先看页面风格即可。
-            </div>
-          </div>
-
-          <div class="result__block" v-if="lastResponse">
-            <div class="badge badge--ok">下单成功</div>
-            <pre class="mono">{{ JSON.stringify(lastResponse, null, 2) }}</pre>
-          </div>
-
-          <details class="result__block" v-if="lastRequest" open>
-            <summary class="result__summary">
-              <span class="badge badge--info">请求体</span>
-              <span class="muted">POST {{ API_BASE_URL }}/app/api/v1/orders</span>
-            </summary>
-            <pre class="mono">{{ JSON.stringify(lastRequest, null, 2) }}</pre>
-          </details>
-        </div>
-      </section>
-    </main>
-
-    <footer class="footer">
-      <span class="muted">API Base</span>
-      <span class="mono mono--inline">{{ API_BASE_URL }}</span>
-    </footer>
-  </div>
+      <div class="footer-safe">
+        <span>API</span>
+        <span class="mono-inline">{{ API_BASE_URL }}</span>
+      </div>
+    </div>
+  </van-config-provider>
 </template>

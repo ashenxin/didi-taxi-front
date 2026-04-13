@@ -150,7 +150,16 @@ export function useAuth() {
     }
   }
 
-  function logout() {
+  /** 先调服务端递增 token 版本，再清本地（与 driver-api Redis tv 对齐） */
+  async function logout() {
+    const token = getToken()
+    if (token) {
+      try {
+        await postJson('/driver/api/v1/auth/logout', {})
+      } catch {
+        /* 仍清本地 */
+      }
+    }
     clearToken()
     authed.value = false
     resetInputs()

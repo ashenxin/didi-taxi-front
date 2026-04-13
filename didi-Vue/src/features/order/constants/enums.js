@@ -6,13 +6,15 @@ export const STATUS_MAP = {
   4: '行程中',
   5: '已完成',
   6: '已取消',
+  7: '待司机确认',
   CREATED: '已创建',
   ASSIGNED: '已分配',
   ACCEPTED: '已接单',
   ARRIVED: '司机已到达',
   STARTED: '行程中',
   COMPLETED: '已完成',
-  CANCELLED: '已取消'
+  CANCELLED: '已取消',
+  PENDING_DRIVER_CONFIRM: '待司机确认'
 }
 
 export const STATUS_OPTIONS = [
@@ -22,7 +24,8 @@ export const STATUS_OPTIONS = [
   { label: '司机已到达', value: 3 },
   { label: '行程中', value: 4 },
   { label: '已完成', value: 5 },
-  { label: '已取消', value: 6 }
+  { label: '已取消', value: 6 },
+  { label: '待司机确认', value: 7 }
 ]
 
 export const EVENT_TYPE_MAP = {
