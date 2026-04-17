@@ -8,8 +8,28 @@
     </template>
 
     <el-form :model="query" inline @submit.prevent>
-      <el-form-item label="省市">
-        <ProvinceCityCascader v-model:province-code="query.provinceCode" v-model:city-code="query.cityCode" />
+      <el-form-item label="运力公司">
+        <el-select
+          v-model="query.companyId"
+          placeholder="全部公司"
+          clearable
+          filterable
+          style="width: 240px"
+        >
+          <el-option
+            v-for="c in companyOptions"
+            :key="c.id"
+            :label="companyOptionLabel(c)"
+            :value="c.id"
+          />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="省/市">
+        <ProvinceCityCascader
+          v-model:province-code="query.provinceCode"
+          v-model:city-code="query.cityCode"
+          placeholder="省 / 市"
+        />
       </el-form-item>
       <el-form-item label="产品线">
         <el-input v-model="query.productCode" placeholder="如 ECONOMY" clearable />
@@ -31,11 +51,14 @@
 
     <el-table :data="tableData" stripe style="width: 100%">
       <el-table-column prop="id" label="ID" width="90" />
-      <el-table-column label="省 / 市" min-width="160">
+      <el-table-column label="运力公司" min-width="200">
         <template #default="{ row }">
-          <span :title="formatGbRegionTitle(row.provinceCode, row.cityCode)">
-            {{ formatGbRegionTitle(row.provinceCode, row.cityCode) }}
-          </span>
+          <span :title="fareRuleCompanyLabel(row)">{{ fareRuleCompanyLabel(row) }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="省/市" min-width="200">
+        <template #default="{ row }">
+          <span :title="fareRuleRegionLabel(row)">{{ fareRuleRegionLabel(row) }}</span>
         </template>
       </el-table-column>
       <el-table-column prop="productCode" label="产品线" width="120" />
@@ -99,9 +122,44 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
+import { fetchCompanyPage } from '../../capacity/api/capacityApi'
 import { deleteFareRule, fetchFareRulePage } from '../api/pricingApi'
 import ProvinceCityCascader from '../../../components/ProvinceCityCascader.vue'
-import { formatGbRegionTitle } from '../../../utils/regionCodes'
+import {
+  gbProvinceCityNames,
+  inferGbProvince6FromCityOrDistrictCode,
+  normalizeGbDigits
+} from '../../../utils/regionCodes'
+
+/** 与「司机列表」一致：省名/市或区名（直辖市展示区县，不用 formatGbRegionTitle 以免只显示直辖市名） */
+const companyOptions = ref([])
+
+function companyOptionLabel(c) {
+  if (!c) return ''
+  const no = c.companyNo ? `${c.companyNo} ` : ''
+  return `${no}${c.companyName || c.id || ''}`
+}
+
+function fareRuleCompanyLabel(row) {
+  if (!row) return '—'
+  const name = row.companyName || ''
+  const no = row.companyNo || ''
+  if (name && no) return `${no} ${name}`
+  if (no) return no
+  if (name) return name
+  return row.companyId != null ? `#${row.companyId}` : '—'
+}
+
+function fareRuleRegionLabel(row) {
+  const cc = normalizeGbDigits(row?.cityCode || '')
+  const p = (row?.provinceCode && String(row.provinceCode).trim()) || inferGbProvince6FromCityOrDistrictCode(cc)
+  if (!cc && !p) return '—'
+  const { provinceName, cityName } = gbProvinceCityNames(p, cc)
+  if (provinceName && cityName) return `${provinceName}/${cityName}`
+  if (provinceName) return provinceName
+  if (cityName) return cityName
+  return '—'
+}
 
 const router = useRouter()
 const pageNo = ref(1)
@@ -110,6 +168,7 @@ const total = ref(0)
 const tableData = ref([])
 
 const query = reactive({
+  companyId: undefined,
   provinceCode: '',
   cityCode: '',
   productCode: '',
@@ -122,6 +181,25 @@ function money(value) {
   return Number(value).toFixed(2)
 }
 
+/** 已失效：有生效结束时间且已过期（与后端 active=0 一致） */
+function isFareRuleExpired(row) {
+  if (row == null || row.effectiveTo == null || row.effectiveTo === '') return false
+  const t = new Date(row.effectiveTo)
+  if (Number.isNaN(t.getTime())) return false
+  return t.getTime() <= Date.now()
+}
+
+/** 未失效在前、已失效在后；同组内按 id 降序 */
+function sortFareRulesActiveFirst(list) {
+  if (!Array.isArray(list) || list.length < 2) return list || []
+  return [...list].sort((a, b) => {
+    const ea = isFareRuleExpired(a) ? 1 : 0
+    const eb = isFareRuleExpired(b) ? 1 : 0
+    if (ea !== eb) return ea - eb
+    return (Number(b.id) || 0) - (Number(a.id) || 0)
+  })
+}
+
 async function search() {
   try {
     const data = await fetchFareRulePage({
@@ -129,7 +207,7 @@ async function search() {
       pageSize: pageSize.value,
       ...query
     })
-    tableData.value = data.list || []
+    tableData.value = sortFareRulesActiveFirst(data.list || [])
     total.value = data.total || 0
     pageNo.value = data.pageNo || pageNo.value
     pageSize.value = data.pageSize || pageSize.value
@@ -139,6 +217,7 @@ async function search() {
 }
 
 function reset() {
+  query.companyId = undefined
   query.provinceCode = ''
   query.cityCode = ''
   query.productCode = ''
@@ -171,7 +250,17 @@ async function onDelete(row) {
   }
 }
 
+async function loadCompanies() {
+  try {
+    const data = await fetchCompanyPage({ pageNo: 1, pageSize: 500 })
+    companyOptions.value = data.list || []
+  } catch {
+    companyOptions.value = []
+  }
+}
+
 onMounted(() => {
+  loadCompanies()
   search()
 })
 </script>

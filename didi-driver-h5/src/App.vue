@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, unref } from 'vue'
+import { computed, ref, unref, watch } from 'vue'
 import { showToast } from 'vant'
 
 import { API_BASE_URL, getJson, getToken, postJson } from './api/http'
@@ -7,6 +7,7 @@ import { useAuth } from './features/auth/useAuth'
 import { useDriverActiveTrip } from './features/trip/useDriverActiveTrip'
 import { parseDriverIdFromToken } from './utils/jwt'
 import { formatAssignedItemStatus, isPendingAssignListStatus } from './utils/orderStatus'
+import { getCurrentLatLng } from './utils/geolocation'
 import { nextTripAction, tripStatusLabel } from './utils/tripStatus'
 
 const themeVars = {
@@ -46,6 +47,9 @@ const assignedLoading = ref(false)
 const assigned = ref([])
 const assignedError = ref('')
 const onlineLoading = ref(false)
+/** 运力 monitor_status：0 未听单，1 听单中，2 服务中等；null 表示尚未拉取 */
+const monitorStatus = ref(null)
+const monitorStatusLoading = ref(false)
 const acceptLoading = ref(null)
 const wsLog = ref([])
 let wsConn = null
@@ -86,6 +90,40 @@ const tripStepActive = computed(() => {
 /** 当前可点的行程动作（与 order-service status 对齐） */
 const tripActionKey = computed(() => nextTripAction(tripRow()?.status))
 
+/** 听单中或服务中：不可再点「上线听单」 */
+const isListeningOrBusy = computed(
+  () => monitorStatus.value === 1 || monitorStatus.value === 2,
+)
+/** 已明确为未听单：不可再点「下线」 */
+const isMonitorOffline = computed(() => monitorStatus.value === 0)
+
+async function loadListeningStatus() {
+  const id = driverId.value
+  if (!id) return
+  monitorStatusLoading.value = true
+  try {
+    const data = await getJson(`/driver/api/v1/drivers/${id}/listening-status`)
+    const ms = data?.monitorStatus
+    if (ms != null && !Number.isNaN(Number(ms))) {
+      monitorStatus.value = Number(ms)
+    }
+  } catch (e) {
+    assignedError.value = e?.message || String(e)
+    maybeDropToLogin(e)
+  } finally {
+    monitorStatusLoading.value = false
+  }
+}
+
+watch(
+  authed,
+  (v) => {
+    if (v) loadListeningStatus()
+    else monitorStatus.value = null
+  },
+  { immediate: true },
+)
+
 function apiBaseToWsBase(base) {
   const b = base.replace(/\/$/, '')
   if (b.startsWith('https://')) return 'wss://' + b.slice(8)
@@ -119,10 +157,38 @@ async function setOnline(online) {
     assignedError.value = '无法解析司机 ID（请重新登录）'
     return
   }
+  if (online && isListeningOrBusy.value) return
+  if (!online && isMonitorOffline.value) return
   onlineLoading.value = true
   assignedError.value = ''
+  const body = { online }
+  if (online) {
+    try {
+      const { lat, lng } = await getCurrentLatLng()
+      body.lat = lat
+      body.lng = lng
+    } catch (e) {
+      const hint = e?.message || String(e)
+      showToast({
+        type: 'fail',
+        message: `未获取到位置（${hint}），已仅更新听单状态；附近派单需授权定位`,
+        duration: 4000,
+      })
+    }
+  }
   try {
-    await postJson(`/driver/api/v1/drivers/${id}/online`, { online })
+    await postJson(`/driver/api/v1/drivers/${id}/online`, body)
+    monitorStatus.value = online ? 1 : 0
+    if (online) {
+      await loadAssigned()
+    }
+    if (online && body.lat != null && body.lng != null) {
+      showToast({ type: 'success', message: '已上线，位置已上报' })
+    } else if (online) {
+      showToast({ type: 'success', message: '已上线听单' })
+    } else {
+      showToast({ type: 'success', message: '已下线' })
+    }
   } catch (e) {
     assignedError.value = e?.message || String(e)
     maybeDropToLogin(e)
@@ -200,6 +266,7 @@ async function logoutAll() {
   assigned.value = []
   assignedError.value = ''
   wsLog.value = []
+  monitorStatus.value = null
   await logout()
 }
 
@@ -355,12 +422,35 @@ async function logoutAll() {
             </van-cell>
           </van-cell-group>
 
+          <van-notice-bar
+            class="section-gap"
+            left-icon="location-o"
+            color="#323233"
+            background="#f7f8fa"
+            text="上线听单将请求浏览器定位，用于附近派单（写入司机池 GEO）；拒绝权限仍可上线，但不参与距离匹配。"
+            wrapable
+            :scrollable="false"
+          />
+
           <div class="toolbar-panel section-gap">
             <div class="toolbar-row">
-            <van-button type="primary" round :loading="onlineLoading" @click="setOnline(true)">
+            <van-button
+              type="primary"
+              round
+              :loading="onlineLoading"
+              :disabled="monitorStatusLoading || isListeningOrBusy"
+              @click="setOnline(true)"
+            >
               {{ onlineLoading ? '…' : '上线听单' }}
             </van-button>
-            <van-button type="warning" round plain :loading="onlineLoading" @click="setOnline(false)">
+            <van-button
+              type="warning"
+              round
+              plain
+              :loading="onlineLoading"
+              :disabled="monitorStatusLoading || isMonitorOffline"
+              @click="setOnline(false)"
+            >
               {{ onlineLoading ? '…' : '下线' }}
             </van-button>
             <van-button round :loading="assignedLoading" @click="loadAssigned">

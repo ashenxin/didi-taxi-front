@@ -2,6 +2,7 @@ import { ref } from 'vue'
 import { fetchMe, fetchMenus } from '../features/auth/api/authApi'
 import { fetchTeamChangePendingCount } from '../features/capacity/api/capacityApi'
 import { clearAdminToken, setUnauthorizedHandler } from '../api/http'
+import { normalizeAdminMenuTree } from '../utils/adminMenuNormalize'
 
 export const adminMe = ref(null)
 export const adminMenus = ref([])
@@ -40,7 +41,7 @@ export async function loadAdminMe({ force = false, ttlMs = 5 * 60 * 1000 } = {})
 export async function loadAdminMenus({ force = false, ttlMs = 5 * 60 * 1000 } = {}) {
   if (!force && adminMenus.value?.length && Date.now() - lastMenusLoadedAt.value < ttlMs) return adminMenus.value
   const menus = await fetchMenus()
-  adminMenus.value = Array.isArray(menus) ? menus : []
+  adminMenus.value = normalizeAdminMenuTree(Array.isArray(menus) ? menus : [])
   lastMenusLoadedAt.value = Date.now()
   return adminMenus.value
 }

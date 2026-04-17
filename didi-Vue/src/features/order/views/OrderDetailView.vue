@@ -68,14 +68,14 @@ import { ElMessage } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import { eventTypeText, statusText } from '../constants/enums'
 import { fetchOrderDetail } from '../api/orderApi'
-import { formatGbDivisionCodesDetail, formatGbRegionTitle } from '../../../utils/regionCodes'
+import { formatGbDivisionCodesDetail, formatGbRegionDisplayName } from '../../../utils/regionCodes'
 
 const route = useRoute()
 const router = useRouter()
 
 const detail = ref(null)
 const regionTitle = computed(() =>
-  detail.value ? formatGbRegionTitle(detail.value.provinceCode, detail.value.cityCode) : ''
+  detail.value ? formatGbRegionDisplayName(detail.value.provinceCode, detail.value.cityCode) : ''
 )
 const divisionCodesDetail = computed(() =>
   detail.value

@@ -20,6 +20,24 @@
       <el-form-item label="手机号">
         <el-input v-model="query.phone" placeholder="模糊匹配" clearable />
       </el-form-item>
+      <el-form-item label="省/市">
+        <ProvinceCityCascader
+          v-model:province-code="query.provinceCode"
+          v-model:city-code="query.cityCode"
+          placeholder="省 / 市"
+        />
+      </el-form-item>
+      <el-form-item label="是否可接单">
+        <el-select v-model="query.canAcceptOrder" placeholder="全部" clearable style="width: 140px">
+          <el-option label="是" :value="1" />
+          <el-option label="否" :value="0" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="审核状态">
+        <el-select v-model="query.auditStatus" placeholder="全部" clearable style="width: 160px">
+          <el-option v-for="opt in AUDIT_STATUS_OPTIONS" :key="opt.value" :label="opt.label" :value="opt.value" />
+        </el-select>
+      </el-form-item>
       <el-form-item>
         <el-button type="primary" native-type="button" @click="search">查询</el-button>
         <el-button native-type="button" @click.prevent="reset">重置</el-button>
@@ -31,13 +49,19 @@
       <el-table-column prop="name" label="姓名" min-width="120" />
       <el-table-column prop="phone" label="手机号" min-width="140" />
       <el-table-column v-if="!lockedCompanyId" prop="companyId" label="公司ID" width="110" />
-      <el-table-column label="省 / 市" min-width="150">
+      <el-table-column label="省/市" min-width="180">
         <template #default="{ row }">
-          {{ row.cityName || formatGbRegionTitle(row.provinceCode, row.cityCode) }}
+          {{ driverRegionLabel(row) }}
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="120">
+      <el-table-column label="审核状态" width="120">
         <template #default="{ row }">
+          {{ auditStatusText(row?.auditStatus) }}
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="200" fixed="right">
+        <template #default="{ row }">
+          <el-button link type="primary" @click="goDetail(row)">详情</el-button>
           <el-button link type="primary" @click="goCars(row)">查看车辆</el-button>
         </template>
       </el-table-column>
@@ -62,7 +86,31 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import { fetchDriverPage } from '../api/capacityApi'
-import { formatGbRegionTitle } from '../../../utils/regionCodes'
+import ProvinceCityCascader from '../../../components/ProvinceCityCascader.vue'
+
+const AUDIT_STATUS_OPTIONS = [
+  { label: '待完善', value: 0 },
+  { label: '审核中', value: 1 },
+  { label: '通过', value: 2 },
+  { label: '驳回/需补件', value: 3 }
+]
+
+function auditStatusText(status) {
+  if (status === null || status === undefined || status === '') return '—'
+  const n = Number(status)
+  const hit = AUDIT_STATUS_OPTIONS.find((o) => o.value === n)
+  return hit ? hit.label : String(status)
+}
+
+/** 后端返回 provinceName、cityName（及编码）；省/市列用二者拼接 */
+function driverRegionLabel(row) {
+  const pn = (row?.provinceName && String(row.provinceName).trim()) || ''
+  const cn = (row?.cityName && String(row.cityName).trim()) || ''
+  if (pn && cn) return `${pn}/${cn}`
+  if (pn) return pn
+  if (cn) return cn
+  return '—'
+}
 
 const route = useRoute()
 const router = useRouter()
@@ -75,7 +123,11 @@ const tableData = ref([])
 const query = reactive({
   companyId: '',
   name: '',
-  phone: ''
+  phone: '',
+  provinceCode: '',
+  cityCode: '',
+  canAcceptOrder: null,
+  auditStatus: null
 })
 
 const companyName = computed(() => route.query.companyName || '')
@@ -101,6 +153,10 @@ const search = () => {
     companyId: query.companyId,
     name: query.name,
     phone: query.phone,
+    provinceCode: query.provinceCode,
+    cityCode: query.cityCode,
+    canAcceptOrder: query.canAcceptOrder,
+    auditStatus: query.auditStatus,
     pageNo: pageNo.value,
     pageSize: pageSize.value
   })
@@ -114,6 +170,10 @@ const search = () => {
 const reset = async () => {
   query.name = ''
   query.phone = ''
+  query.provinceCode = ''
+  query.cityCode = ''
+  query.canAcceptOrder = null
+  query.auditStatus = null
   // 非「从公司页带入公司」时，一并清空公司 ID，否则界面像没重置
   if (!lockedCompanyId.value) {
     query.companyId = ''
@@ -127,6 +187,14 @@ const reset = async () => {
 const onSizeChange = () => {
   pageNo.value = 1
   search()
+}
+
+const goDetail = (driver) => {
+  if (!driver || driver.id === undefined || driver.id === null || driver.id === '') {
+    ElMessage.error('司机ID缺失')
+    return
+  }
+  router.push({ path: `/capacity/drivers/${driver.id}`, query: { ...route.query } })
 }
 
 const goCars = (driver) => {

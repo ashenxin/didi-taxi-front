@@ -31,6 +31,7 @@ function hasChildMenu(item) {
 }
 
 function subMenuIndex(item) {
-  return item.path || `sub-${item.id}`
+  // 与 el-menu-item 的 path 索引区分，避免父级 path 与子级相同（如历史单层 /orders）时冲突
+  return `sub-${item.id}`
 }
 </script>

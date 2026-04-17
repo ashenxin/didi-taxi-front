@@ -51,8 +51,8 @@
       </el-table-column>
       <el-table-column label="省 / 市" min-width="160">
         <template #default="{ row }">
-          <span :title="formatGbRegionTitle(row.provinceCode, row.cityCode)">
-            {{ formatGbRegionTitle(row.provinceCode, row.cityCode) }}
+          <span :title="formatGbRegionDisplayName(row.provinceCode, row.cityCode)">
+            {{ formatGbRegionDisplayName(row.provinceCode, row.cityCode) }}
           </span>
         </template>
       </el-table-column>
@@ -87,7 +87,7 @@ import { useRouter } from 'vue-router'
 import { STATUS_OPTIONS, statusText } from '../constants/enums'
 import { fetchOrderPage } from '../api/orderApi'
 import ProvinceCityCascader from '../../../components/ProvinceCityCascader.vue'
-import { formatGbRegionTitle } from '../../../utils/regionCodes'
+import { formatGbRegionDisplayName } from '../../../utils/regionCodes'
 
 const router = useRouter()
 const pageNo = ref(1)

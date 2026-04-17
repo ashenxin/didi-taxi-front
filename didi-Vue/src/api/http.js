@@ -38,6 +38,12 @@ function createApiError(message, extra = {}) {
   return err
 }
 
+/** 与后端 ResponseVo.code 对齐（Jackson 可能序列化为数字或字符串） */
+function isSuccessBusinessCode(code) {
+  if (code === undefined || code === null) return false
+  return code === 200 || code === '200' || Number(code) === 200
+}
+
 let unauthorizedHandler = null
 export function setUnauthorizedHandler(handler) {
   unauthorizedHandler = typeof handler === 'function' ? handler : null
@@ -94,7 +100,7 @@ export async function requestJson(path, options = {}) {
     redirectToLoginIfNeeded()
     throw createApiError(result.msg || '未登录或登录已失效', { code: 401, httpStatus: resp.status, data: result.data })
   }
-  if (!resp.ok || result.code !== 200) {
+  if (!resp.ok || !isSuccessBusinessCode(result.code)) {
     throw createApiError(result.msg || `服务异常（${resp.status}），请稍后重试`, {
       code: typeof result.code === 'undefined' ? undefined : result.code,
       httpStatus: resp.status,

@@ -25,7 +25,7 @@ export const orderRows = [
     orderNo: 'OD202603240003',
     status: 'CANCELLED',
     provinceCode: '310000',
-    cityCode: '310100',
+    cityCode: '310104',
     productCode: '专车',
     passengerPhone: '13700137000',
     passengerId: 10003,

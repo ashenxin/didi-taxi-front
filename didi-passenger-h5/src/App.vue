@@ -5,6 +5,7 @@ import { showConfirmDialog, showToast } from 'vant'
 import { API_BASE_URL, getJson, postJson } from './api/http'
 import { useAuth } from './features/auth/useAuth'
 import {
+  CANCEL_BY_SYSTEM,
   formatOrderStatus,
   isTerminalOrderStatus,
   orderStatusCode,
@@ -38,10 +39,15 @@ const fixed = reactive({
   origin: {
     name: '杭州火车东站',
     address: '浙江省杭州市上城区全福桥路2号杭州东站',
+    /** WGS84，与 BFF 派单 GEO 一致；有 lat/lng 时服务端可直接按上车点做最近司机匹配 */
+    lat: 30.2525,
+    lng: 120.2156,
   },
   dest: {
     name: '龙翔桥地铁站',
     address: '浙江省杭州市上城区湖滨街道龙翔桥地铁站',
+    lat: 30.2635,
+    lng: 120.1655,
   },
 })
 
@@ -120,11 +126,19 @@ function stopOrderPoll() {
 async function fetchOrderDetailOnce() {
   if (!trackingOrderNo.value) return
   try {
+    const prevCode = orderStatusCode(liveOrderDetail.value?.status)
     const data = await getJson('/app/api/v1/orders/' + encodeURIComponent(trackingOrderNo.value))
     liveOrderDetail.value = data
     const code = orderStatusCode(data?.status)
     if (code === 5 || code === 6) {
       stopPollTimer()
+    }
+    if (prevCode !== 6 && code === 6 && data?.cancelBy === CANCEL_BY_SYSTEM) {
+      const msg =
+        typeof data?.cancelReason === 'string' && data.cancelReason.trim()
+          ? data.cancelReason.trim()
+          : '当前暂无车辆可用，请稍后重试'
+      showToast({ type: 'fail', message: msg, duration: 4500 })
     }
   } catch (e) {
     maybeDropToLogin(e)
@@ -259,7 +273,9 @@ async function cancelOrder() {
           <div class="hero-strip__icon" aria-hidden="true">🚕</div>
           <div class="hero-strip__text">
             <div class="hero-strip__title">一键叫车 · 实时行程</div>
-            <div class="hero-strip__sub">登录后下单，订单状态将自动刷新直至完单或取消</div>
+            <div class="hero-strip__sub">
+              登录后下单，订单状态将自动刷新直至完单或取消；示例行程已带起终点坐标，便于附近派单
+            </div>
           </div>
         </div>
       </div>

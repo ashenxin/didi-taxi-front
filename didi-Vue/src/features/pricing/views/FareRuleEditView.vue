@@ -11,8 +11,30 @@
     </template>
 
     <el-form ref="formRef" :model="form" :rules="rules" label-width="120px">
-      <el-form-item label="省市" prop="provinceCode">
-        <ProvinceCityCascader v-model:province-code="form.provinceCode" v-model:city-code="form.cityCode" width="100%" />
+      <el-form-item label="运力公司" prop="companyId">
+        <el-select
+          v-model="form.companyId"
+          filterable
+          placeholder="请选择运力公司"
+          style="width: 100%"
+          @change="onCompanyChange"
+        >
+          <el-option
+            v-for="c in companies"
+            :key="c.id"
+            :label="companyOptionLabel(c)"
+            :value="c.id"
+          />
+        </el-select>
+        <span class="form-hint">保存时省/市须与公司档案一致，选择公司将自动带出运营区域</span>
+      </el-form-item>
+      <el-form-item label="省/市" prop="provinceCode">
+        <ProvinceCityCascader
+          v-model:province-code="form.provinceCode"
+          v-model:city-code="form.cityCode"
+          placeholder="省 / 市"
+          width="100%"
+        />
       </el-form-item>
       <el-form-item label="产品线编码" prop="productCode">
         <el-input v-model="form.productCode" placeholder="如 ECONOMY/COMFORT" />
@@ -61,6 +83,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
+import { fetchCompanyPage } from '../../capacity/api/capacityApi'
 import { createFareRule, fetchFareRuleDetail, updateFareRule } from '../api/pricingApi'
 import ProvinceCityCascader from '../../../components/ProvinceCityCascader.vue'
 
@@ -72,8 +95,10 @@ const props = defineProps({
 const router = useRouter()
 const formRef = ref()
 const saving = ref(false)
+const companies = ref([])
 
 const form = reactive({
+  companyId: null,
   provinceCode: '',
   cityCode: '',
   productCode: '',
@@ -90,6 +115,7 @@ const form = reactive({
 })
 
 const rules = {
+  companyId: [{ required: true, message: '请选择运力公司', trigger: 'change' }],
   provinceCode: [
     { required: true, message: '请选择省', trigger: 'change' },
     {
@@ -130,10 +156,33 @@ function goBack() {
   router.push('/pricing/fare-rules')
 }
 
+function companyOptionLabel(c) {
+  if (!c) return ''
+  const no = c.companyNo ? `${c.companyNo} ` : ''
+  return `${no}${c.companyName || ''}`.trim() || String(c.id)
+}
+
+function onCompanyChange(companyId) {
+  const c = companies.value.find((x) => x.id === companyId)
+  if (!c) return
+  form.provinceCode = c.provinceCode || ''
+  form.cityCode = c.cityCode || ''
+}
+
+async function loadCompanies() {
+  try {
+    const data = await fetchCompanyPage({ pageNo: 1, pageSize: 500 })
+    companies.value = data.list || []
+  } catch {
+    companies.value = []
+  }
+}
+
 async function loadDetail() {
   if (props.isNew) return
   try {
     const data = await fetchFareRuleDetail(props.id)
+    form.companyId = data.companyId != null ? data.companyId : null
     form.provinceCode = data.provinceCode || ''
     form.cityCode = data.cityCode || ''
     form.productCode = data.productCode || ''
@@ -163,6 +212,7 @@ async function submit() {
     saving.value = true
     try {
       const payload = {
+        companyId: form.companyId,
         provinceCode: form.provinceCode,
         cityCode: form.cityCode,
         productCode: form.productCode,
@@ -194,8 +244,9 @@ async function submit() {
   })
 }
 
-onMounted(() => {
-  loadDetail()
+onMounted(async () => {
+  await loadCompanies()
+  await loadDetail()
 })
 </script>
 

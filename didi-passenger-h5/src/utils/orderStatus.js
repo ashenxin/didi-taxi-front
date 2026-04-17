@@ -50,3 +50,6 @@ export function isTerminalOrderStatus(statusCode) {
   const c = statusCode == null ? null : Number(statusCode)
   return c === 5 || c === 6
 }
+
+/** 与 trip_order.cancel_by 一致：3=系统取消（如待派单超时） */
+export const CANCEL_BY_SYSTEM = 3

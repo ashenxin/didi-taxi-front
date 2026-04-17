@@ -72,6 +72,7 @@ function addMenuRoutes(router, nodes, pathSeen) {
 /** 与菜单动态路由并列注册的固定路由 name，用于卸载时扫表删除 */
 const EXTRA_ROUTE_NAMES = [
   'orderDetail',
+  'capacityDriverDetail',
   'capacityCarsByDriver',
   'pricingFareRuleNew',
   'pricingFareRuleEdit',
@@ -86,6 +87,13 @@ const extraRouteDefs = [
     fullPath: '/orders/:orderNo',
     props: true,
     loader: () => import('../features/order/views/OrderDetailView.vue')
+  },
+  {
+    name: 'capacityDriverDetail',
+    childPath: 'capacity/drivers/:driverId',
+    fullPath: '/capacity/drivers/:driverId',
+    props: true,
+    loader: () => import('../features/capacity/views/DriverDetailView.vue')
   },
   {
     name: 'capacityCarsByDriver',
