@@ -37,7 +37,7 @@
         />
       </el-form-item>
       <el-form-item>
-        <el-button type="primary" native-type="button" @click="search">查询</el-button>
+        <el-button type="primary" native-type="button" @click="onSearch">查询</el-button>
         <el-button native-type="button" @click.prevent="reset">重置</el-button>
       </el-form-item>
     </el-form>
@@ -126,6 +126,11 @@ const search = () => {
     .catch((e) => {
       ElMessage.error(e.message || '查询失败')
     })
+}
+
+const onSearch = () => {
+  pageNo.value = 1
+  search()
 }
 
 const reset = () => {

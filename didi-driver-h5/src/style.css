@@ -259,6 +259,60 @@ body {
   font-weight: 600;
 }
 
+.home-status-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.home-status-row__left,
+.home-status-row__right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.home-status-row__label {
+  color: #646566;
+  font-size: 13px;
+}
+
+.entry-grid .van-grid {
+  margin-top: 4px;
+}
+
+.entry-grid .van-grid-item__content {
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+  margin: 6px;
+}
+
+.entry-grid .van-grid-item__text {
+  font-size: 12px;
+  color: #323233;
+}
+
+.teamchange-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.teamchange-actions {
+  width: 100%;
+}
+
+.my-cell-icon {
+  margin-right: 10px;
+  font-size: 18px;
+  color: #2563eb;
+}
+
 .assign-card:last-child {
   margin-bottom: 0;
 }

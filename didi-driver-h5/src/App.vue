@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref, unref, watch } from 'vue'
-import { showToast } from 'vant'
+import { showConfirmDialog, showToast } from 'vant'
 
 import { API_BASE_URL, getJson, getToken, postJson } from './api/http'
 import { useAuth } from './features/auth/useAuth'
@@ -55,6 +55,7 @@ const wsLog = ref([])
 let wsConn = null
 
 const pageTitle = computed(() => (authed.value ? '司机工作台' : '司机登录'))
+const view = ref('home') // home | teamChangeApply | teamChangeStatus
 
 const driverId = computed(() => parseDriverIdFromToken(getToken()))
 
@@ -96,6 +97,195 @@ const isListeningOrBusy = computed(
 )
 /** 已明确为未听单：不可再点「下线」 */
 const isMonitorOffline = computed(() => monitorStatus.value === 0)
+
+const monitorStatusText = computed(() => {
+  const ms = monitorStatus.value
+  if (ms == null) return '未知'
+  if (ms === 0) return '未听单'
+  if (ms === 1) return '听单中'
+  if (ms === 2) return '服务中'
+  return String(ms)
+})
+
+const acceptabilityText = computed(() => {
+  const can = teamChangeBelonging.value?.canAcceptOrder
+  if (typeof can === 'boolean') return can ? '可接单' : '不可接单'
+  if (monitorStatus.value == null) return '未知'
+  return '未知'
+})
+
+function fmtTime(v) {
+  if (!v) return '-'
+  const d = typeof v === 'number' ? new Date(v) : new Date(String(v))
+  if (Number.isNaN(d.getTime())) return String(v)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(
+    d.getMinutes(),
+  )}`
+}
+
+function openTeamChange() {
+  view.value = 'teamChangeApply'
+}
+
+function openTodo(name = '功能') {
+  showToast({ message: `${name}：功能待开发`, duration: 1600 })
+}
+
+function backToHome() {
+  view.value = 'home'
+}
+
+function openTeamChangeStatus() {
+  view.value = 'teamChangeStatus'
+}
+
+const teamChangeLoading = ref(false)
+const teamChangeCurrent = ref(null)
+const teamChangeBelongingLoading = ref(false)
+const teamChangeBelonging = ref(null)
+const teamChangeSearchForm = ref({
+  cityCode: '',
+  companyKeyword: '',
+  teamKeyword: '',
+})
+const teamChangeSearchLoading = ref(false)
+const teamChangeCandidates = ref([])
+const teamChangeSelected = ref(null)
+const teamChangeReason = ref('')
+
+async function loadTeamChangeCurrent() {
+  const id = driverId.value
+  if (!id) return
+  teamChangeLoading.value = true
+  try {
+    teamChangeCurrent.value = await getJson('/driver/api/v1/team-change-requests/current')
+  } catch (e) {
+    maybeDropToLogin(e)
+    showToast({ type: 'fail', message: e?.message || String(e) })
+  } finally {
+    teamChangeLoading.value = false
+  }
+}
+
+async function loadTeamChangeBelonging() {
+  const id = driverId.value
+  if (!id) return
+  teamChangeBelongingLoading.value = true
+  try {
+    teamChangeBelonging.value = await getJson('/driver/api/v1/team-change/belonging')
+  } catch (e) {
+    maybeDropToLogin(e)
+    showToast({ type: 'fail', message: e?.message || String(e) })
+  } finally {
+    teamChangeBelongingLoading.value = false
+  }
+}
+
+async function searchTeamChangeCompanies() {
+  teamChangeSearchLoading.value = true
+  try {
+    const data = await getJson(
+      `/driver/api/v1/capacity/companies/search?cityCode=${encodeURIComponent(
+        teamChangeSearchForm.value.cityCode || '',
+      )}&companyKeyword=${encodeURIComponent(teamChangeSearchForm.value.companyKeyword || '')}&teamKeyword=${encodeURIComponent(
+        teamChangeSearchForm.value.teamKeyword || '',
+      )}&pageNo=1&pageSize=10`,
+    )
+    teamChangeCandidates.value = data?.list || []
+  } catch (e) {
+    maybeDropToLogin(e)
+    showToast({ type: 'fail', message: e?.message || String(e) })
+  } finally {
+    teamChangeSearchLoading.value = false
+  }
+}
+
+function pickCandidate(item) {
+  teamChangeSelected.value = item
+}
+
+async function openSubmitConfirm() {
+  if (!teamChangeSelected.value?.companyId) {
+    showToast({ type: 'fail', message: '请先选择目标车队' })
+    return
+  }
+  try {
+    await showConfirmDialog({
+      title: '提交前强提醒',
+      message:
+        '提交后将暂停接单，直到审核通过，或你选择放弃换队并恢复接单。\n\n放弃换队恢复接单后，需要你重新上线听单。',
+      confirmButtonText: '确认提交',
+      cancelButtonText: '取消',
+    })
+    await submitTeamChange()
+  } catch {
+    // cancelled
+  }
+}
+
+async function submitTeamChange() {
+  if (!teamChangeSelected.value?.companyId) return
+  const body = {
+    toCompanyId: teamChangeSelected.value.companyId,
+    requestReason: teamChangeReason.value || '',
+  }
+  teamChangeSearchLoading.value = true
+  try {
+    await postJson('/driver/api/v1/team-change-requests', body)
+    showToast({ type: 'success', message: '已提交申请' })
+    view.value = 'teamChangeStatus'
+    await loadTeamChangeCurrent()
+    await loadListeningStatus()
+  } catch (e) {
+    maybeDropToLogin(e)
+    const msg = e?.message || String(e)
+    showToast({ type: 'fail', message: msg })
+  } finally {
+    teamChangeSearchLoading.value = false
+  }
+}
+
+async function cancelTeamChangeAndRestore() {
+  const id = teamChangeCurrent.value?.id
+  if (!id) return
+  try {
+    await showConfirmDialog({
+      title: '确认操作',
+      message: '确认撤销/放弃换队并恢复接单？\n\n恢复后需要重新上线听单。',
+      confirmButtonText: '确认',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  teamChangeLoading.value = true
+  try {
+    await postJson(`/driver/api/v1/team-change-requests/${id}/cancel`, {})
+    showToast({ type: 'success', message: '已恢复接单（请重新上线听单）' })
+    await loadTeamChangeCurrent()
+    await loadListeningStatus()
+  } catch (e) {
+    maybeDropToLogin(e)
+    showToast({ type: 'fail', message: e?.message || String(e) })
+  } finally {
+    teamChangeLoading.value = false
+  }
+}
+
+watch(
+  [authed, view],
+  ([a, v]) => {
+    if (a && (v === 'teamChangeApply' || v === 'teamChangeStatus')) {
+      loadTeamChangeCurrent()
+      loadTeamChangeBelonging()
+      if (v === 'teamChangeApply') {
+        searchTeamChangeCompanies()
+      }
+    }
+  },
+  { immediate: true },
+)
 
 async function loadListeningStatus() {
   const id = driverId.value
@@ -190,7 +380,9 @@ async function setOnline(online) {
       showToast({ type: 'success', message: '已下线' })
     }
   } catch (e) {
-    assignedError.value = e?.message || String(e)
+    const msg = e?.message || String(e)
+    assignedError.value = msg
+    showToast({ type: 'fail', message: msg, duration: 2500 })
     maybeDropToLogin(e)
   } finally {
     onlineLoading.value = false
@@ -412,12 +604,208 @@ async function logoutAll() {
         </van-cell-group>
 
         <template v-else>
+          <template v-if="view !== 'home'">
+            <van-cell-group inset :title="view === 'teamChangeApply' ? '更换车队' : '换队申请状态'" class="section-gap">
+              <van-cell>
+                <template #title>
+                  <div class="teamchange-head">
+                    <van-button size="small" plain hairline type="primary" @click="backToHome">返回首页</van-button>
+                    <div style="flex: 1"></div>
+                    <van-button
+                      v-if="view === 'teamChangeApply'"
+                      size="small"
+                      plain
+                      hairline
+                      type="primary"
+                      @click="openTeamChangeStatus"
+                    >
+                      查看状态
+                    </van-button>
+                    <van-button
+                      v-else
+                      size="small"
+                      plain
+                      hairline
+                      type="primary"
+                      @click="openTeamChange"
+                    >
+                      去申请
+                    </van-button>
+                  </div>
+                </template>
+              </van-cell>
+            </van-cell-group>
+
+            <!-- 申请页 -->
+            <template v-if="view === 'teamChangeApply'">
+              <van-cell-group inset title="当前归属（只读）" class="section-gap">
+                <van-cell
+                  title="城市"
+                  :value="teamChangeBelongingLoading ? '加载中…' : teamChangeBelonging?.cityName || '（以档案为准）'"
+                />
+                <van-cell
+                  title="公司/车队"
+                  :value="
+                    teamChangeBelongingLoading
+                      ? '加载中…'
+                      : teamChangeBelonging?.fromCompanyName
+                        ? `${teamChangeBelonging?.fromCompanyName}${teamChangeBelonging?.fromTeamName ? ` / ${teamChangeBelonging?.fromTeamName}` : ''}`
+                        : '（以运力为准）'
+                  "
+                />
+                <van-cell title="状态" :value="`接单资格：${acceptabilityText}；听单：${monitorStatusText}`" />
+              </van-cell-group>
+
+              <van-cell-group inset title="目标车队（搜索 + 点选）" class="section-gap">
+                <van-field v-model="teamChangeSearchForm.cityCode" label="城市编码" placeholder="可选，如 310000" clearable />
+                <van-field v-model="teamChangeSearchForm.companyKeyword" label="公司关键字" placeholder="可选" clearable />
+                <van-field v-model="teamChangeSearchForm.teamKeyword" label="车队关键字" placeholder="可选" clearable />
+                <div style="padding: 8px 12px 12px">
+                  <van-button block round type="primary" :loading="teamChangeSearchLoading" @click="searchTeamChangeCompanies">
+                    {{ teamChangeSearchLoading ? '搜索中…' : '搜索' }}
+                  </van-button>
+                </div>
+                <van-empty v-if="!teamChangeSearchLoading && (!teamChangeCandidates || teamChangeCandidates.length === 0)" description="暂无候选" />
+                <van-cell
+                  v-for="item in teamChangeCandidates"
+                  :key="item.companyId"
+                  clickable
+                  :title="`${item.cityName || item.cityCode || ''} · ${item.companyName || ''}`"
+                  :label="`${item.team || ''}（companyId=${item.companyId}）`"
+                  @click="pickCandidate(item)"
+                >
+                  <template #right-icon>
+                    <van-tag v-if="teamChangeSelected && teamChangeSelected.companyId === item.companyId" type="success" plain>已选</van-tag>
+                    <van-tag v-else plain>选择</van-tag>
+                  </template>
+                </van-cell>
+              </van-cell-group>
+
+              <van-cell-group inset title="申请原因（可选）" class="section-gap">
+                <van-field
+                  v-model="teamChangeReason"
+                  rows="3"
+                  autosize
+                  label="原因"
+                  type="textarea"
+                  maxlength="200"
+                  show-word-limit
+                  placeholder="0-200 字"
+                />
+              </van-cell-group>
+
+              <van-notice-bar
+                v-if="teamChangeCurrent && teamChangeCurrent.status === 'PENDING'"
+                class="section-gap"
+                left-icon="info-o"
+                color="#ed6a0c"
+                background="#fff7e8"
+                text="你已经有一条待审核申请，建议去状态页查看。"
+                wrapable
+                :scrollable="false"
+              />
+
+              <div class="section-gap">
+                <van-button
+                  block
+                  round
+                  type="primary"
+                  :disabled="teamChangeCurrent && teamChangeCurrent.status === 'PENDING'"
+                  :loading="teamChangeSearchLoading"
+                  @click="openSubmitConfirm"
+                >
+                  提交申请
+                </van-button>
+              </div>
+            </template>
+
+            <!-- 状态页 -->
+            <template v-else>
+              <van-cell-group inset title="当前/最新申请" class="section-gap">
+                <van-empty v-if="!teamChangeCurrent" description="暂无申请" />
+                <template v-else>
+                  <van-cell title="状态" :value="teamChangeCurrent.status">
+                    <template #right-icon>
+                      <van-tag v-if="teamChangeCurrent.status === 'PENDING'" type="warning" plain>审核中</van-tag>
+                      <van-tag v-else-if="teamChangeCurrent.status === 'REJECTED'" type="danger" plain>已拒绝</van-tag>
+                      <van-tag v-else-if="teamChangeCurrent.status === 'APPROVED'" type="success" plain>已通过</van-tag>
+                      <van-tag v-else plain>{{ teamChangeCurrent.status }}</van-tag>
+                    </template>
+                  </van-cell>
+                  <van-cell title="from" :value="teamChangeCurrent.fromTeamName || teamChangeCurrent.fromCompanyId" />
+                  <van-cell title="to" :value="teamChangeCurrent.toTeamName || teamChangeCurrent.toCompanyId" />
+                  <van-cell title="提交时间" :value="fmtTime(teamChangeCurrent.requestedAt)" />
+                  <van-cell title="原因" :value="teamChangeCurrent.requestReason || '（未填写）'" />
+                  <van-cell v-if="teamChangeCurrent.reviewReason" title="拒绝原因" :value="teamChangeCurrent.reviewReason" />
+                </template>
+              </van-cell-group>
+
+              <van-cell-group inset title="操作" class="section-gap">
+                <van-cell>
+                  <template #title>
+                    <div class="teamchange-actions">
+                      <van-button
+                        v-if="teamChangeCurrent && (teamChangeCurrent.status === 'PENDING' || teamChangeCurrent.status === 'REJECTED')"
+                        block
+                        round
+                        type="primary"
+                        :loading="teamChangeLoading"
+                        @click="cancelTeamChangeAndRestore"
+                      >
+                        {{ teamChangeCurrent.status === 'PENDING' ? '撤销申请并恢复接单' : '放弃换队并恢复接单' }}
+                      </van-button>
+                      <van-notice-bar
+                        v-else-if="teamChangeCurrent && teamChangeCurrent.status === 'APPROVED'"
+                        left-icon="passed"
+                        color="#07c160"
+                        background="#f0fff4"
+                        text="已换队成功，请重新上线听单"
+                        :scrollable="false"
+                        wrapable
+                      />
+                      <van-notice-bar
+                        v-else-if="teamChangeCurrent && teamChangeCurrent.status === 'CANCELLED'"
+                        left-icon="info-o"
+                        color="#1989fa"
+                        background="#ecf5ff"
+                        text="已放弃换队并恢复接单，请重新上线听单"
+                        :scrollable="false"
+                        wrapable
+                      />
+                      <van-button v-else block round plain type="primary" @click="openTeamChange">
+                        再次申请（示意）
+                      </van-button>
+                    </div>
+                  </template>
+                </van-cell>
+              </van-cell-group>
+            </template>
+          </template>
+
+          <template v-else>
           <van-cell-group inset title="工作台">
             <van-cell>
               <template #title>
                 <span class="token-hint">
                   Token 含 <code>tv</code> / <code>audit</code> ；退出会调用服务端作废会话。
                 </span>
+              </template>
+            </van-cell>
+          </van-cell-group>
+
+          <van-cell-group inset title="首页（登录后）" class="section-gap">
+            <van-cell>
+              <template #title>
+                <div class="home-status-row">
+                  <div class="home-status-row__left">
+                    <span class="home-status-row__label">接单资格</span>
+                    <van-tag type="success" plain>{{ acceptabilityText }}</van-tag>
+                  </div>
+                  <div class="home-status-row__right">
+                    <span class="home-status-row__label">听单状态</span>
+                    <van-tag type="primary" plain>{{ monitorStatusText }}</van-tag>
+                  </div>
+                </div>
               </template>
             </van-cell>
           </van-cell-group>
@@ -459,6 +847,34 @@ async function logoutAll() {
             <van-button round plain hairline type="danger" @click="logoutAll">退出登录</van-button>
             </div>
           </div>
+
+          <van-cell-group inset title="更多功能入口" class="section-gap entry-grid">
+            <van-grid :column-num="3" :border="false" clickable>
+              <van-grid-item icon="balance-o" text="钱包（待开发）" @click="openTodo('钱包')" />
+              <van-grid-item icon="records-o" text="行程记录（待开发）" @click="openTodo('行程记录')" />
+              <van-grid-item icon="like-o" text="服务分（待开发）" @click="openTodo('服务分')" />
+              <van-grid-item icon="setting-o" text="设置（待开发）" @click="openTodo('设置')" />
+            </van-grid>
+          </van-cell-group>
+
+          <van-cell-group inset title="我的 / 设置" class="section-gap">
+            <van-cell title="更换车队" label="提交申请 / 暂停接单 / 审核后生效" is-link clickable @click="openTeamChange">
+              <template #icon>
+                <van-icon name="exchange" class="my-cell-icon" />
+              </template>
+            </van-cell>
+            <van-cell title="换队申请状态" label="查看审核进度 / 撤销并恢复接单" is-link clickable @click="openTeamChangeStatus">
+              <template #icon>
+                <van-icon name="notes-o" class="my-cell-icon" />
+              </template>
+            </van-cell>
+            <van-cell title="其他功能" label="功能待开发" is-link clickable @click="openTodo('其他功能')">
+              <template #icon>
+                <van-icon name="apps-o" class="my-cell-icon" />
+              </template>
+            </van-cell>
+          </van-cell-group>
+          </template>
 
           <van-notice-bar
             v-if="trip.activeTripOrderNo && (!assigned || assigned.length === 0)"

@@ -4,7 +4,7 @@
       <div class="toolbar-row">
         <strong>换队申请</strong>
         <div style="display: flex; gap: 8px; align-items: center">
-          <el-tag v-if="query.status === 'PENDING' || !query.status" type="warning" effect="plain">默认仅待审核</el-tag>
+          <el-tag v-if="query.status === 'PENDING'" type="warning" effect="plain">默认仅待审核</el-tag>
           <el-button @click="reloadAll">刷新</el-button>
         </div>
       </div>
@@ -21,8 +21,9 @@
 
     <el-form :model="query" inline class="filter-form" @submit.prevent>
       <el-form-item label="状态">
-        <el-select v-model="query.status" placeholder="默认待审核" clearable style="width: 140px">
+        <el-select v-model="query.status" placeholder="默认待审核" style="width: 140px">
           <el-option label="待审核" value="PENDING" />
+          <el-option label="全部" value="ALL" />
           <el-option label="已通过" value="APPROVED" />
           <el-option label="已拒绝" value="REJECTED" />
         </el-select>
@@ -31,7 +32,7 @@
         <el-input v-model="query.driverPhone" placeholder="模糊匹配" clearable style="width: 160px" />
       </el-form-item>
       <el-form-item>
-        <el-button type="primary" native-type="button" @click="search">查询</el-button>
+        <el-button type="primary" native-type="button" @click="onSearch">查询</el-button>
         <el-button native-type="button" @click.prevent="reset">重置</el-button>
       </el-form-item>
     </el-form>
@@ -119,14 +120,14 @@ const total = ref(0)
 const tableData = ref([])
 
 const query = reactive({
-  status: '',
+  status: 'PENDING',
   driverPhone: ''
 })
 
 const tableTotal = ref(0)
 const showPendingBanner = computed(() => {
   const st = query.status
-  const pendingScope = !st || st === 'PENDING'
+  const pendingScope = st === 'PENDING'
   return pendingScope && tableTotal.value > 0
 })
 
@@ -150,10 +151,11 @@ const teamChangeStatusLabel = (code) => {
 }
 
 const search = () => {
+  const status = query.status === 'ALL' ? undefined : query.status
   fetchTeamChangePage({
     pageNo: pageNo.value,
     pageSize: pageSize.value,
-    status: query.status || undefined,
+    status,
     driverPhone: query.driverPhone || undefined
   })
     .then((res) => {
@@ -164,8 +166,13 @@ const search = () => {
     .catch((e) => ElMessage.error(e.message || '查询失败'))
 }
 
+const onSearch = () => {
+  pageNo.value = 1
+  search()
+}
+
 const reset = () => {
-  query.status = ''
+  query.status = 'PENDING'
   query.driverPhone = ''
   pageNo.value = 1
   pageSize.value = 10
@@ -177,13 +184,13 @@ const onSizeChange = () => {
   search()
 }
 
-const reloadAll = () => {
+const reloadAll = ({ forcePendingCount = false } = {}) => {
   search()
-  refreshPendingCount()
+  refreshPendingCount({ force: forcePendingCount })
 }
 
 onMounted(() => {
-  reloadAll()
+  reloadAll({ forcePendingCount: true })
 })
 
 const approveVisible = ref(false)
@@ -216,7 +223,7 @@ const doApprove = async () => {
     await approveTeamChange(row.id, payload)
     ElMessage.success('已通过')
     approveVisible.value = false
-    reloadAll()
+    reloadAll({ forcePendingCount: true })
   } catch (e) {
     ElMessage.error(e.message || '操作失败')
   } finally {
@@ -236,7 +243,7 @@ const doReject = async () => {
     await rejectTeamChange(row.id, { reviewReason: rejectReason.value.trim() })
     ElMessage.success('已拒绝')
     rejectVisible.value = false
-    reloadAll()
+    reloadAll({ forcePendingCount: true })
   } catch (e) {
     ElMessage.error(e.message || '操作失败')
   } finally {

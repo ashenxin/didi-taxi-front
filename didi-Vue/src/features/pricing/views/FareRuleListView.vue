@@ -44,7 +44,7 @@
         </el-select>
       </el-form-item>
       <el-form-item>
-        <el-button type="primary" native-type="button" @click="search">查询</el-button>
+        <el-button type="primary" native-type="button" @click="onSearch">查询</el-button>
         <el-button native-type="button" @click.prevent="reset">重置</el-button>
       </el-form-item>
     </el-form>
@@ -181,25 +181,6 @@ function money(value) {
   return Number(value).toFixed(2)
 }
 
-/** 已失效：有生效结束时间且已过期（与后端 active=0 一致） */
-function isFareRuleExpired(row) {
-  if (row == null || row.effectiveTo == null || row.effectiveTo === '') return false
-  const t = new Date(row.effectiveTo)
-  if (Number.isNaN(t.getTime())) return false
-  return t.getTime() <= Date.now()
-}
-
-/** 未失效在前、已失效在后；同组内按 id 降序 */
-function sortFareRulesActiveFirst(list) {
-  if (!Array.isArray(list) || list.length < 2) return list || []
-  return [...list].sort((a, b) => {
-    const ea = isFareRuleExpired(a) ? 1 : 0
-    const eb = isFareRuleExpired(b) ? 1 : 0
-    if (ea !== eb) return ea - eb
-    return (Number(b.id) || 0) - (Number(a.id) || 0)
-  })
-}
-
 async function search() {
   try {
     const data = await fetchFareRulePage({
@@ -207,13 +188,18 @@ async function search() {
       pageSize: pageSize.value,
       ...query
     })
-    tableData.value = sortFareRulesActiveFirst(data.list || [])
+    tableData.value = data.list || []
     total.value = data.total || 0
     pageNo.value = data.pageNo || pageNo.value
     pageSize.value = data.pageSize || pageSize.value
   } catch (e) {
     ElMessage.error(e.message || '查询失败')
   }
+}
+
+function onSearch() {
+  pageNo.value = 1
+  search()
 }
 
 function reset() {
