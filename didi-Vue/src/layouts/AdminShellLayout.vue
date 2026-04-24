@@ -40,6 +40,27 @@ const router = useRouter()
 
 const displayName = computed(() => adminMe.value?.displayName || adminMe.value?.username || '')
 
+/**
+ * 侧栏“固定入口”：
+ * - 不依赖后端菜单更新（避免新增页面发布后侧栏看不到）
+ * - 仍然走 router.addRoute 注册的 extra routes（见 router/dynamicRoutes.js）
+ */
+const EXTRA_SIDEBAR_ITEMS = Object.freeze([
+  {
+    id: 'extra-capacity-cars',
+    name: '车辆查询',
+    path: '/capacity/cars',
+    component: 'capacity/CarSearchListView.vue',
+    visible: 1,
+    children: []
+  }
+])
+
+const fullMenuTree = computed(() => {
+  const base = Array.isArray(adminMenuTree.value) ? adminMenuTree.value : []
+  return [...base, ...EXTRA_SIDEBAR_ITEMS]
+})
+
 function logout() {
   logoutAdmin()
   teardownAdminMenuRoutes()
@@ -70,11 +91,11 @@ function filterVisibleSidebar(nodes) {
   return out
 }
 
-const sidebarMenuItems = computed(() => filterVisibleSidebar(adminMenuTree.value))
+const sidebarMenuItems = computed(() => filterVisibleSidebar(fullMenuTree.value))
 
 const activeMenu = computed(() => {
   const p = route.path
-  const paths = collectMenuPaths(adminMenuTree.value).sort((a, b) => b.length - a.length)
+  const paths = collectMenuPaths(fullMenuTree.value).sort((a, b) => b.length - a.length)
   for (const path of paths) {
     if (p === path || (path !== '/' && p.startsWith(path + '/'))) return path
   }

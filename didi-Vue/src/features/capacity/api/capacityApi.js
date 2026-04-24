@@ -37,6 +37,18 @@ export async function fetchCarsByDriver(driverId, params) {
   return unwrapPage(data)
 }
 
+/** 独立车辆列表（后台管理端） */
+export async function fetchCarPage(params) {
+  const query = toQueryString(params)
+  const data = await requestJson(`/admin/api/v1/capacity/cars?${query}`)
+  return unwrapPage(data)
+}
+
+/** 车辆详情（含司机/公司信息） */
+export async function fetchCarDetail(id) {
+  return requestJson(`/admin/api/v1/capacity/cars/${id}`)
+}
+
 /** 换队申请 — 待审核条数（菜单角标） */
 export async function fetchTeamChangePendingCount() {
   return requestJson('/admin/api/v1/capacity/team-change-requests/pending-count')
