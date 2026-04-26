@@ -200,7 +200,11 @@ async function placeOrder() {
   lastRequest.value = payload
 
   try {
-    const data = await postJson('/app/api/v1/orders', payload)
+    // passenger-api 同时支持：
+    // - POST /app/api/v1/orders（同步：创建 + 指派）
+    // - POST /app/api/v1/orders/create（两段式：创建，派单异步推进）
+    // 乘客端演示页默认走两段式，更贴近真实 App 流程。
+    const data = await postJson('/app/api/v1/orders/create', payload)
     lastResponse.value = data
     if (data?.orderNo) startOrderPoll(data.orderNo)
   } catch (e) {
@@ -531,7 +535,7 @@ async function cancelOrder() {
             <van-collapse v-if="lastRequest" :border="false" class="debug-collapse">
               <van-collapse-item title="请求体" name="req">
                 <pre class="mono-block">{{ JSON.stringify(lastRequest, null, 2) }}</pre>
-                <p class="debug-endpoint-hint">POST {{ API_BASE_URL }}/app/api/v1/orders</p>
+                <p class="debug-endpoint-hint">POST {{ API_BASE_URL }}/app/api/v1/orders/create</p>
               </van-collapse-item>
             </van-collapse>
           </van-cell-group>

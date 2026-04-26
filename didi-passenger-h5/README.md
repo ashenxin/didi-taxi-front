@@ -9,9 +9,10 @@ npm i
 npm run dev
 ```
 
-默认后端聚合服务见 `.env.development`：
+默认后端聚合服务见 `.env.development`（走网关 18080）：
 
-- `VITE_API_BASE_URL=http://127.0.0.1:8100`
+- `VITE_API_BASE_URL=http://127.0.0.1:18080`（经网关转发）
+- 直连 `passenger-api`（默认 8100）时可改为：`VITE_API_BASE_URL=http://127.0.0.1:8100`
 
 # Vue 3 + Vite
 
