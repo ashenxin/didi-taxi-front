@@ -51,7 +51,21 @@ const onlineLoading = ref(false)
 const monitorStatus = ref(null)
 const monitorStatusLoading = ref(false)
 const acceptLoading = ref(null)
+/** 拒单中的订单号 */
+const rejectLoading = ref(null)
 const wsLog = ref([])
+const reasonSheetShow = ref(false)
+const reasonSheetTitle = ref('')
+let reasonSheetResolver = null
+
+/** 拒单 / 司机取消（到达前）共用原因码，与后端约定单选 */
+const DRIVER_REASON_SHEET = [
+  { name: '距离太远', code: 'TOO_FAR' },
+  { name: '临时无法接单', code: 'TEMPORARILY_UNAVAILABLE' },
+  { name: '车辆问题', code: 'VEHICLE_ISSUE' },
+  { name: '其他', code: 'OTHER' },
+]
+const reasonSheetActions = DRIVER_REASON_SHEET.map((r) => ({ name: r.name, code: r.code }))
 let wsConn = null
 
 const pageTitle = computed(() => (authed.value ? '司机工作台' : '司机登录'))
@@ -341,6 +355,11 @@ async function loadAssigned() {
   }
 }
 
+async function onRefreshAssigned() {
+  if (assignedLoading.value) return
+  await loadAssigned()
+}
+
 async function setOnline(online) {
   const id = driverId.value
   if (!id) {
@@ -408,6 +427,72 @@ async function acceptOrder(orderNo) {
   } finally {
     acceptLoading.value = null
   }
+}
+
+async function pickDriverReasonCode(sheetTitle) {
+  reasonSheetTitle.value = sheetTitle
+  reasonSheetShow.value = true
+  return new Promise((resolve) => {
+    reasonSheetResolver = resolve
+  })
+}
+
+function onReasonSheetSelect(action) {
+  reasonSheetShow.value = false
+  if (reasonSheetResolver) {
+    reasonSheetResolver(action?.code ?? null)
+    reasonSheetResolver = null
+  }
+}
+
+function onReasonSheetCancel() {
+  reasonSheetShow.value = false
+  if (reasonSheetResolver) {
+    reasonSheetResolver(null)
+    reasonSheetResolver = null
+  }
+}
+
+async function rejectOrder(orderNo) {
+  const id = driverId.value
+  if (!id || !orderNo) return
+  const reasonCode = await pickDriverReasonCode('拒单原因')
+  if (!reasonCode) return
+  rejectLoading.value = orderNo
+  assignedError.value = ''
+  try {
+    await postJson(`/driver/api/v1/orders/${encodeURIComponent(orderNo)}/reject`, {
+      driverId: id,
+      reasonCode,
+    })
+    await loadAssigned()
+    showToast({ type: 'success', message: '已拒绝，订单已收回' })
+  } catch (e) {
+    assignedError.value = e?.message || String(e)
+    if (isConflictError(e)) {
+      showToast({ type: 'fail', message: e?.message || '操作冲突' })
+    }
+    maybeDropToLogin(e)
+  } finally {
+    rejectLoading.value = null
+  }
+}
+
+async function driverCancelAcceptedTrip() {
+  const st = tripRow()?.status
+  if (st !== 2) return
+  const reasonCode = await pickDriverReasonCode('取消原因（到达前）')
+  if (!reasonCode) return
+  try {
+    await showConfirmDialog({
+      title: '确认取消',
+      message: '取消后订单将收回并重新派单。到达上车点后不可在此取消。',
+    })
+  } catch {
+    return
+  }
+  await trip.cancelBeforeArrive(reasonCode)
+  await loadAssigned()
 }
 
 async function connectDriverWs() {
@@ -841,40 +926,29 @@ async function logoutAll() {
             >
               {{ onlineLoading ? '…' : '下线' }}
             </van-button>
-            <van-button round :loading="assignedLoading" @click="loadAssigned">
+            <button
+              type="button"
+              class="refresh-assigned-btn"
+              :disabled="assignedLoading"
+              @click="onRefreshAssigned"
+              @touchend.prevent="onRefreshAssigned"
+            >
               {{ assignedLoading ? '加载中' : '刷新指派单' }}
-            </van-button>
+            </button>
             <van-button round plain hairline type="danger" @click="logoutAll">退出登录</van-button>
             </div>
           </div>
 
-          <van-cell-group inset title="更多功能入口" class="section-gap entry-grid">
-            <van-grid :column-num="3" :border="false" clickable>
-              <van-grid-item icon="balance-o" text="钱包（待开发）" @click="openTodo('钱包')" />
-              <van-grid-item icon="records-o" text="行程记录（待开发）" @click="openTodo('行程记录')" />
-              <van-grid-item icon="like-o" text="服务分（待开发）" @click="openTodo('服务分')" />
-              <van-grid-item icon="setting-o" text="设置（待开发）" @click="openTodo('设置')" />
-            </van-grid>
-          </van-cell-group>
-
-          <van-cell-group inset title="我的 / 设置" class="section-gap">
-            <van-cell title="更换车队" label="提交申请 / 暂停接单 / 审核后生效" is-link clickable @click="openTeamChange">
-              <template #icon>
-                <van-icon name="exchange" class="my-cell-icon" />
-              </template>
-            </van-cell>
-            <van-cell title="换队申请状态" label="查看审核进度 / 撤销并恢复接单" is-link clickable @click="openTeamChangeStatus">
-              <template #icon>
-                <van-icon name="notes-o" class="my-cell-icon" />
-              </template>
-            </van-cell>
-            <van-cell title="其他功能" label="功能待开发" is-link clickable @click="openTodo('其他功能')">
-              <template #icon>
-                <van-icon name="apps-o" class="my-cell-icon" />
-              </template>
-            </van-cell>
-          </van-cell-group>
-          </template>
+          <van-notice-bar
+            v-if="assignedError"
+            color="#ee0a24"
+            background="#fef0f0"
+            left-icon="warning-o"
+            :text="assignedError"
+            wrapable
+            :scrollable="false"
+            class="section-gap"
+          />
 
           <van-notice-bar
             v-if="trip.activeTripOrderNo && (!assigned || assigned.length === 0)"
@@ -921,19 +995,63 @@ async function logoutAll() {
                 <div v-if="item.offerExpiresAt" class="assign-deadline">确认截止：{{ item.offerExpiresAt }}</div>
               </template>
               <template #footer>
-                <van-button
-                  type="primary"
-                  size="small"
-                  round
-                  block
-                  :loading="acceptLoading === item.orderNo"
-                  @click="acceptOrder(item.orderNo)"
-                >
-                  {{ acceptLoading === item.orderNo ? '提交中…' : '确认接单' }}
-                </van-button>
+                <div class="assign-card__actions">
+                  <van-button
+                    plain
+                    hairline
+                    type="danger"
+                    size="small"
+                    round
+                    block
+                    :loading="rejectLoading === item.orderNo"
+                    :disabled="acceptLoading === item.orderNo"
+                    @click="rejectOrder(item.orderNo)"
+                  >
+                    {{ rejectLoading === item.orderNo ? '提交中…' : '拒单' }}
+                  </van-button>
+                  <van-button
+                    type="primary"
+                    size="small"
+                    round
+                    block
+                    :loading="acceptLoading === item.orderNo"
+                    :disabled="rejectLoading === item.orderNo"
+                    @click="acceptOrder(item.orderNo)"
+                  >
+                    {{ acceptLoading === item.orderNo ? '提交中…' : '确认接单' }}
+                  </van-button>
+                </div>
               </template>
             </van-card>
           </div>
+
+          <van-cell-group inset title="更多功能入口" class="section-gap entry-grid">
+            <van-grid :column-num="3" :border="false" clickable>
+              <van-grid-item icon="balance-o" text="钱包（待开发）" @click="openTodo('钱包')" />
+              <van-grid-item icon="records-o" text="行程记录（待开发）" @click="openTodo('行程记录')" />
+              <van-grid-item icon="like-o" text="服务分（待开发）" @click="openTodo('服务分')" />
+              <van-grid-item icon="setting-o" text="设置（待开发）" @click="openTodo('设置')" />
+            </van-grid>
+          </van-cell-group>
+
+          <van-cell-group inset title="我的 / 设置" class="section-gap">
+            <van-cell title="更换车队" label="提交申请 / 暂停接单 / 审核后生效" is-link clickable @click="openTeamChange">
+              <template #icon>
+                <van-icon name="exchange" class="my-cell-icon" />
+              </template>
+            </van-cell>
+            <van-cell title="换队申请状态" label="查看审核进度 / 撤销并恢复接单" is-link clickable @click="openTeamChangeStatus">
+              <template #icon>
+                <van-icon name="notes-o" class="my-cell-icon" />
+              </template>
+            </van-cell>
+            <van-cell title="其他功能" label="功能待开发" is-link clickable @click="openTodo('其他功能')">
+              <template #icon>
+                <van-icon name="apps-o" class="my-cell-icon" />
+              </template>
+            </van-cell>
+          </van-cell-group>
+          </template>
 
           <van-cell-group v-if="trip.activeTripOrderNo" inset title="行程" class="trip-panel">
             <van-cell>
@@ -999,6 +1117,20 @@ async function logoutAll() {
                 wrapable
                 :scrollable="false"
               />
+
+              <div v-if="trip.activeTrip.status === 2" class="trip-cancel-before-arrive">
+                <van-button
+                  block
+                  round
+                  plain
+                  hairline
+                  type="danger"
+                  :loading="trip.tripActionLoading"
+                  @click="driverCancelAcceptedTrip"
+                >
+                  取消订单（到达前）
+                </van-button>
+              </div>
 
               <div v-if="tripActionKey" class="trip-action-buttons">
                 <van-button
@@ -1083,19 +1215,18 @@ async function logoutAll() {
             </van-cell>
             <pre v-if="wsLog.length" class="ws-log-pre">{{ wsLog.join('\n') }}</pre>
           </van-cell-group>
-
-          <van-notice-bar
-            v-if="assignedError"
-            color="#ee0a24"
-            background="#fef0f0"
-            left-icon="warning-o"
-            :text="assignedError"
-            wrapable
-            :scrollable="false"
-            class="section-gap"
-          />
         </template>
       </main>
+      <van-action-sheet
+        v-model:show="reasonSheetShow"
+        :title="reasonSheetTitle"
+        :actions="reasonSheetActions"
+        cancel-text="关闭"
+        close-on-click-action
+        @select="onReasonSheetSelect"
+        @cancel="onReasonSheetCancel"
+        @click-overlay="onReasonSheetCancel"
+      />
     </div>
   </van-config-provider>
 </template>

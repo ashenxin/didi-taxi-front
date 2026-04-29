@@ -63,7 +63,6 @@ const POLL_MS = 2000
 
 /** 仅反映 POST 下单接口返回体里的 status，不随后续轮询更新 */
 const createStatusText = computed(() => formatOrderStatus(lastResponse.value?.status))
-const liveStatusText = computed(() => formatOrderStatus(liveOrderDetail.value?.status))
 const liveStatusCode = computed(() => orderStatusCode(liveOrderDetail.value?.status))
 
 /**
@@ -78,6 +77,12 @@ const displayOrderStatus = computed(() => {
 })
 const displayStatusText = computed(() => formatOrderStatus(displayOrderStatus.value))
 const displayStatusCode = computed(() => orderStatusCode(displayOrderStatus.value))
+const isReDispatching = computed(() => {
+  const d = liveOrderDetail.value
+  if (!trackingOrderNo.value || !d) return false
+  return orderStatusCode(d.status) === 0 && d.reDispatching === true
+})
+const displayStatusTextFinal = computed(() => (isReDispatching.value ? '正在为您重新派单' : displayStatusText.value))
 const showCancelOrder = computed(() => {
   if (!trackingOrderNo.value) return false
   const c = liveStatusCode.value
@@ -100,12 +105,26 @@ const placeOrderBlock = computed(() => {
   if (isTerminalOrderStatus(c)) {
     return { disabled: false, hint: '' }
   }
-  return { disabled: true, hint: '当前有进行中的订单，请等待完单或取消后再下单' }
+  return {
+    disabled: true,
+    hint: '您还有一单未完成，请等行程结束或取消该单后，再下新单',
+  }
 })
 
 const placeOrderDisabled = computed(
   () => loading.value || (authed.value && placeOrderBlock.value.disabled),
 )
+
+/** 主按钮禁用态：优先展示当前订单状态（如「派单中」），避免整段流程只看见「您还有一单未完成」 */
+const placeOrderButtonText = computed(() => {
+  if (loading.value) return '正在下单…'
+  if (!authed.value || !placeOrderBlock.value.disabled) return '立即下单'
+  const h = placeOrderBlock.value.hint || ''
+  if (h.includes('同步')) return '正在同步订单…'
+  const label = displayStatusText.value
+  if (label && label !== '-') return label
+  return '您还有一单未完成'
+})
 
 const cancelLoading = ref(false)
 const cancelReason = ref('')
@@ -162,6 +181,9 @@ const {
   password,
   smsCode,
   smsSending,
+  smsSendDisabled,
+  smsSendButtonType,
+  smsSendButtonText,
   smsHint,
   authLoading,
   authError,
@@ -210,7 +232,7 @@ async function placeOrder() {
   } catch (e) {
     lastError.value = e?.message || String(e)
     if (e?.code === 409) {
-      showToast({ type: 'fail', message: e.message || '您已有进行中的订单' })
+      showToast({ type: 'fail', message: e.message || '您还有一单未完成，请先完单或取消后再试' })
     }
     maybeDropToLogin(e)
   } finally {
@@ -218,12 +240,15 @@ async function placeOrder() {
   }
 }
 
-function logoutAll() {
+async function logoutAll() {
   stopOrderPoll()
-  logout()
+  const hint = await logout()
   lastError.value = null
   lastResponse.value = null
   lastRequest.value = null
+  if (hint) {
+    showToast({ type: 'success', message: hint, duration: 3200 })
+  }
 }
 
 async function cancelOrder() {
@@ -314,12 +339,14 @@ async function cancelOrder() {
                 <template #button>
                   <van-button
                     size="small"
-                    type="primary"
+                    :type="smsSendButtonType"
+                    plain
+                    hairline
                     :loading="smsSending"
-                    :disabled="smsSending"
+                    :disabled="smsSendDisabled"
                     @click="sendSms"
                   >
-                    {{ smsSending ? '发送中' : '发送验证码' }}
+                    {{ smsSendButtonText }}
                   </van-button>
                 </template>
               </van-field>
@@ -400,12 +427,12 @@ async function cancelOrder() {
           </van-cell-group>
 
           <van-notice-bar
-            v-if="trackingOrderNo && authed && liveStatusText && liveStatusText !== '-'"
+            v-if="trackingOrderNo && authed && displayStatusTextFinal && displayStatusTextFinal !== '-'"
             class="section-gap poll-status-bar"
             left-icon="replay"
             color="#1989fa"
             background="#ecf5ff"
-            :text="`跟踪中 ${trackingOrderNo.slice(-8)} · ${liveStatusText}`"
+            :text="`跟踪中 ${trackingOrderNo.slice(-8)} · ${displayStatusTextFinal}`"
             :scrollable="false"
           />
           <van-notice-bar
@@ -479,13 +506,7 @@ async function cancelOrder() {
               :disabled="!authed || placeOrderDisabled"
               @click="placeOrder"
             >
-              {{
-                loading
-                  ? '正在下单…'
-                  : placeOrderBlock.disabled && authed
-                    ? '进行中订单未完成'
-                    : '立即下单'
-              }}
+              {{ placeOrderButtonText }}
             </van-button>
             <van-button
               v-if="authed"
@@ -523,9 +544,9 @@ async function cancelOrder() {
                     （code={{ orderStatusCode(lastResponse?.status) }}）
                   </span>
                 </div>
-                <div v-if="displayStatusText && displayStatusText !== '-'" class="order-status-line">
+                <div v-if="displayStatusTextFinal && displayStatusTextFinal !== '-'" class="order-status-line">
                   {{ trackingOrderNo && liveOrderDetail ? '轮询最新状态' : '当前展示状态' }}：
-                  <span :class="{ 'status-pending': displayStatusCode === 7 }">{{ displayStatusText }}</span>
+                  <span :class="{ 'status-pending': displayStatusCode === 7 }">{{ displayStatusTextFinal }}</span>
                   <span v-if="displayStatusCode != null" class="status-code-muted">
                     （code={{ displayStatusCode }}）
                   </span>
@@ -547,9 +568,9 @@ async function cancelOrder() {
                 <span class="order-no-mono">{{ trackingOrderNo }}</span>
               </template>
             </van-cell>
-            <van-cell v-if="liveStatusText && liveStatusText !== '-'" title="状态">
+            <van-cell v-if="displayStatusTextFinal && displayStatusTextFinal !== '-'" title="状态">
               <template #value>
-                <span :class="{ 'status-pending': liveStatusCode === 7 }">{{ liveStatusText }}</span>
+                <span :class="{ 'status-pending': displayStatusCode === 7 }">{{ displayStatusTextFinal }}</span>
               </template>
             </van-cell>
             <van-field

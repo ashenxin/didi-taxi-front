@@ -152,6 +152,16 @@ body {
   border: 1px solid rgba(15, 23, 42, 0.06) !important;
 }
 
+.assign-card__actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.trip-cancel-before-arrive {
+  padding: 8px 16px 4px;
+}
+
 .page--driver .van-cell-group--inset {
   box-shadow: var(--shadow-card);
 }
@@ -257,6 +267,22 @@ body {
   flex: 1;
   min-width: calc(50% - 5px);
   font-weight: 600;
+}
+
+.refresh-assigned-btn {
+  flex: 1;
+  min-width: calc(50% - 5px);
+  height: 44px;
+  border: 1px solid #dcdee0;
+  border-radius: 999px;
+  background: #fff;
+  color: #323233;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.refresh-assigned-btn:disabled {
+  opacity: 0.6;
 }
 
 .home-status-row {

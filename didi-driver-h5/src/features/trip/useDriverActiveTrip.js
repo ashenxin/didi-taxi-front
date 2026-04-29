@@ -128,6 +128,34 @@ export function useDriverActiveTrip(driverId, { getJson, postJson, maybeDropToLo
     await postTripAction('/finish', body)
   }
 
+  /**
+   * 已接单、到达前取消：订单收回重新派单；本端停止跟单。
+   */
+  async function cancelBeforeArrive(reasonCode) {
+    const id = driverId.value
+    const no = activeTripOrderNo.value
+    if (!id || !no || !reasonCode) return
+    tripActionLoading.value = true
+    tripError.value = ''
+    try {
+      await postJson(`/driver/api/v1/orders/${encodeURIComponent(no)}/cancel`, {
+        driverId: id,
+        reasonCode,
+      })
+      showToast({ type: 'success', message: '已取消，订单已收回重新派单' })
+      clearActiveTrip()
+    } catch (e) {
+      tripError.value = e?.message || String(e)
+      const code = e?.code ?? e?.httpStatus
+      if (code === 409) {
+        showToast({ type: 'fail', message: e?.message || '操作冲突' })
+      }
+      maybeDropToLogin(e)
+    } finally {
+      tripActionLoading.value = false
+    }
+  }
+
   watch(
     authed,
     (v, wasAuthed) => {
@@ -174,5 +202,6 @@ export function useDriverActiveTrip(driverId, { getJson, postJson, maybeDropToLo
     arrive,
     startTrip,
     finishTrip,
+    cancelBeforeArrive,
   })
 }

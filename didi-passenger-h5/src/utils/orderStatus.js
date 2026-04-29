@@ -1,6 +1,6 @@
-/** 与 order-service / passenger-api OrderStatus.code 对齐 */
+/** 与 order-service / passenger-api OrderStatus.code 对齐（文案可按乘客端产品微调） */
 export const ORDER_STATUS_ZH = {
-  0: '已创建',
+  0: '派单中',
   1: '已派单',
   2: '已接单',
   3: '司机已到达',
@@ -30,9 +30,11 @@ export function orderStatusCode(status) {
  */
 export function formatOrderStatus(status) {
   if (status == null) return '-'
+  const c = orderStatusCode(status)
+  // CREATED：乘客端统一「派单中」，避免 BFF 仍返回「已创建」时与产品文案不一致
+  if (c === 0) return ORDER_STATUS_ZH[0]
   if (typeof status === 'object') {
     if (typeof status.zh === 'string' && status.zh) return status.zh
-    const c = orderStatusCode(status)
     if (c != null) return ORDER_STATUS_ZH[c] ?? `状态(${c})`
   }
   if (typeof status === 'number') return ORDER_STATUS_ZH[status] ?? `状态(${status})`
