@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, reactive, ref } from 'vue'
 import { showConfirmDialog, showToast } from 'vant'
 
 import { API_BASE_URL, getJson, postJson } from './api/http'
+import { passengerWsStreamUrl, resolvePassengerWsOrigin, tryParseEnvelope } from './utils/passengerOrderWs'
 import { useAuth } from './features/auth/useAuth'
 import {
   CANCEL_BY_SYSTEM,
@@ -59,7 +60,45 @@ const lastError = ref(null)
 const trackingOrderNo = ref('')
 const liveOrderDetail = ref(null)
 let orderPollTimer = null
-const POLL_MS = 2000
+
+const POLL_MS_FAST = 2000
+const POLL_MS_SLOW = 10000
+/** 设为 false 则仅 HTTP 轮询（可与后端 passenger.ws.enabled 同时对齐关闭）。 */
+const WS_ENABLED =
+  typeof import.meta !== 'undefined' && import.meta.env?.VITE_PASSENGER_WS_ENABLED !== 'false'
+const WS_PING_MS = 25_000
+
+const wsConnected = ref(false)
+
+let orderSocket = null
+let wsPingInterval = null
+let wsReconnectTimeout = null
+let detailDebounceTimeout = null
+let wsReconnectAttempt = 0
+let lastHandledSeqByOrderNo = {}
+/** 防止「主动关旧连换小票」时旧 socket 的 close 再去调度重连，导致周期性误打 ws-token */
+let wsConnGeneration = 0
+
+const {
+  authed,
+  authTab,
+  phone,
+  password,
+  smsCode,
+  smsSending,
+  smsSendDisabled,
+  smsSendButtonType,
+  smsSendButtonText,
+  smsHint,
+  authLoading,
+  authError,
+  sendSms,
+  loginSms,
+  loginPassword,
+  logout,
+  maybeDropToLogin,
+  switchLoginMode,
+} = useAuth()
 
 /** 仅反映 POST 下单接口返回体里的 status，不随后续轮询更新 */
 const createStatusText = computed(() => formatOrderStatus(lastResponse.value?.status))
@@ -129,6 +168,153 @@ const placeOrderButtonText = computed(() => {
 const cancelLoading = ref(false)
 const cancelReason = ref('')
 
+function clearWsTimers() {
+  if (wsPingInterval) {
+    clearInterval(wsPingInterval)
+    wsPingInterval = null
+  }
+  if (wsReconnectTimeout) {
+    clearTimeout(wsReconnectTimeout)
+    wsReconnectTimeout = null
+  }
+  if (detailDebounceTimeout) {
+    clearTimeout(detailDebounceTimeout)
+    detailDebounceTimeout = null
+  }
+}
+
+function closeOrderSocket(reason) {
+  clearWsTimers()
+  if (orderSocket) {
+    try {
+      orderSocket.close(4000, reason || 'client')
+    } catch {
+      /* ignore */
+    }
+    orderSocket = null
+  }
+  wsConnected.value = false
+}
+
+function nextWsBackoffMs() {
+  const cap = 45_000
+  const step = Math.min(cap, 2000 * 2 ** wsReconnectAttempt)
+  wsReconnectAttempt += 1
+  return Math.floor(step + Math.random() * 800)
+}
+
+function scheduleDebouncedFetchDetail() {
+  if (detailDebounceTimeout) clearTimeout(detailDebounceTimeout)
+  detailDebounceTimeout = setTimeout(() => {
+    detailDebounceTimeout = null
+    fetchOrderDetailOnce()
+  }, 300)
+}
+
+function handleWsMessage(ev) {
+  const env = tryParseEnvelope(ev.data)
+  if (!env || env.type !== 'ORDER_CHANGED') return
+  const ono = env.data?.orderNo
+  const seq = env.data?.seq
+  if (!ono || ono !== trackingOrderNo.value) return
+  if (typeof seq === 'number' && Number.isFinite(seq)) {
+    const prev = lastHandledSeqByOrderNo[ono] ?? 0
+    if (seq <= prev) return
+    lastHandledSeqByOrderNo[ono] = seq
+  }
+  scheduleDebouncedFetchDetail()
+}
+
+function restartOrderPoll(intervalMs) {
+  if (orderPollTimer) {
+    clearInterval(orderPollTimer)
+    orderPollTimer = null
+  }
+  orderPollTimer = setInterval(fetchOrderDetailOnce, intervalMs)
+}
+
+/** WS 断线或不可用时用短间隔轮询；连上后拉长间隔作兜底。 */
+function useFastPoll() {
+  restartOrderPoll(POLL_MS_FAST)
+}
+
+function useSlowPollIfWs() {
+  restartOrderPoll(wsConnected.value ? POLL_MS_SLOW : POLL_MS_FAST)
+}
+
+async function openOrderWebSocket() {
+  if (!WS_ENABLED || !authed.value || !trackingOrderNo.value) return
+  const snapshotNo = trackingOrderNo.value
+
+  wsConnGeneration += 1
+  const connGen = wsConnGeneration
+
+  closeOrderSocket('reopen')
+  let wsToken
+  try {
+    const data = await postJson('/app/api/v1/auth/ws-token', {})
+    wsToken = data?.accessToken
+  } catch (e) {
+    wsConnected.value = false
+    if (e?.code === 503 || (e?.message || '').includes('实时通道')) {
+      return
+    }
+    maybeDropToLogin(e)
+    return
+  }
+  if (!wsToken || trackingOrderNo.value !== snapshotNo) return
+  const wsOrigin = resolvePassengerWsOrigin(API_BASE_URL)
+  const url = passengerWsStreamUrl(wsOrigin, wsToken)
+  const sock = new WebSocket(url)
+  orderSocket = sock
+
+  sock.addEventListener('open', () => {
+    if (trackingOrderNo.value !== snapshotNo) {
+      try {
+        sock.close()
+      } catch {
+        /* ignore */
+      }
+      return
+    }
+    wsConnected.value = true
+    wsReconnectAttempt = 0
+    clearWsTimers()
+    useSlowPollIfWs()
+    wsPingInterval = setInterval(() => {
+      try {
+        if (orderSocket && orderSocket.readyState === WebSocket.OPEN) {
+          orderSocket.send('ping')
+        }
+      } catch {
+        /* ignore */
+      }
+    }, WS_PING_MS)
+  })
+
+  sock.addEventListener('message', handleWsMessage)
+
+  sock.addEventListener('error', () => {
+    wsConnected.value = false
+    useFastPoll()
+  })
+
+  sock.addEventListener('close', () => {
+    if (connGen !== wsConnGeneration) return
+    if (orderSocket === sock) {
+      orderSocket = null
+    }
+    wsConnected.value = false
+    clearWsTimers()
+    useFastPoll()
+    if (!trackingOrderNo.value || !authed.value) return
+    if (trackingOrderNo.value !== snapshotNo) return
+    const c = orderStatusCode(liveOrderDetail.value?.status)
+    if (c === 5 || c === 6) return
+    wsReconnectTimeout = setTimeout(() => openOrderWebSocket(), nextWsBackoffMs())
+  })
+}
+
 function stopPollTimer() {
   if (orderPollTimer) {
     clearInterval(orderPollTimer)
@@ -137,6 +323,10 @@ function stopPollTimer() {
 }
 
 function stopOrderPoll() {
+  wsConnGeneration += 1
+  closeOrderSocket('stop-tracking')
+  wsReconnectAttempt = 0
+  lastHandledSeqByOrderNo = {}
   stopPollTimer()
   trackingOrderNo.value = ''
   liveOrderDetail.value = null
@@ -151,6 +341,8 @@ async function fetchOrderDetailOnce() {
     const code = orderStatusCode(data?.status)
     if (code === 5 || code === 6) {
       stopPollTimer()
+      wsConnGeneration += 1
+      closeOrderSocket('terminal')
     }
     if (prevCode !== 6 && code === 6 && data?.cancelBy === CANCEL_BY_SYSTEM) {
       const msg =
@@ -167,33 +359,21 @@ async function fetchOrderDetailOnce() {
 function startOrderPoll(orderNo) {
   stopOrderPoll()
   if (!orderNo) return
+  wsReconnectAttempt = 0
+  lastHandledSeqByOrderNo = {}
   trackingOrderNo.value = orderNo
   fetchOrderDetailOnce()
-  orderPollTimer = setInterval(fetchOrderDetailOnce, POLL_MS)
+  useFastPoll()
+  if (WS_ENABLED && authed.value) {
+    queueMicrotask(() => openOrderWebSocket())
+  }
 }
 
-onBeforeUnmount(() => stopPollTimer())
+const pollSecondsLabel = computed(() => (wsConnected.value ? POLL_MS_SLOW : POLL_MS_FAST) / 1000)
 
-const {
-  authed,
-  authTab,
-  phone,
-  password,
-  smsCode,
-  smsSending,
-  smsSendDisabled,
-  smsSendButtonType,
-  smsSendButtonText,
-  smsHint,
-  authLoading,
-  authError,
-  sendSms,
-  loginSms,
-  loginPassword,
-  logout,
-  maybeDropToLogin,
-  switchLoginMode,
-} = useAuth()
+onBeforeUnmount(() => {
+  stopOrderPoll()
+})
 
 const cityName = computed(() => CITY_NAME_MAP[fixed.cityCode] || fixed.cityCode)
 const productName = computed(() => PRODUCT_NAME_MAP[fixed.productCode] || fixed.productCode)
@@ -562,7 +742,10 @@ async function cancelOrder() {
           </van-cell-group>
 
           <van-cell-group v-if="trackingOrderNo && authed" inset title="订单进度" class="section-gap">
-            <van-cell title="轮询" :value="`约每 ${POLL_MS / 1000}s · 完单或取消后停止`" />
+            <van-cell
+              title="轮询兜底"
+              :value="`约每 ${pollSecondsLabel}s · 完单或取消后停止 · ${WS_ENABLED ? (wsConnected ? 'WebSocket 已连' : 'WS 未连/已降级') : '未启用 WS'}`"
+            />
             <van-cell title="订单号">
               <template #value>
                 <span class="order-no-mono">{{ trackingOrderNo }}</span>

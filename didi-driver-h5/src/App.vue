@@ -54,6 +54,9 @@ const acceptLoading = ref(null)
 /** 拒单中的订单号 */
 const rejectLoading = ref(null)
 const wsLog = ref([])
+const wsConnected = ref(false)
+let wsPingTimer = null
+const ENABLE_WS_ASSIGNED = true
 const reasonSheetShow = ref(false)
 const reasonSheetTitle = ref('')
 let reasonSheetResolver = null
@@ -105,10 +108,6 @@ const tripStepActive = computed(() => {
 /** 当前可点的行程动作（与 order-service status 对齐） */
 const tripActionKey = computed(() => nextTripAction(tripRow()?.status))
 
-/** 听单中或服务中：不可再点「上线听单」 */
-const isListeningOrBusy = computed(
-  () => monitorStatus.value === 1 || monitorStatus.value === 2,
-)
 /** 已明确为未听单：不可再点「下线」 */
 const isMonitorOffline = computed(() => monitorStatus.value === 0)
 
@@ -301,6 +300,28 @@ watch(
   { immediate: true },
 )
 
+/**
+ * 已在听单中时静默补一次上线 + 坐标，解决：Redis GEO TTL 过期、刷新页面后库表仍为听单但司机不在池内，导致第二次下单无法迟滞匹配。
+ */
+async function reseedListeningGeoQuiet() {
+  const id = driverId.value
+  if (!id || monitorStatus.value !== 1) return
+  try {
+    const body = { online: true }
+    try {
+      const { lat, lng } = await getCurrentLatLng()
+      body.lat = lat
+      body.lng = lng
+    } catch {
+      /* 无坐标则仍发 online，仅无法写 GEO（与手动上线一致） */
+    }
+    await postJson(`/driver/api/v1/drivers/${id}/online`, body)
+    await loadAssigned(true)
+  } catch (e) {
+    maybeDropToLogin(e)
+  }
+}
+
 async function loadListeningStatus() {
   const id = driverId.value
   if (!id) return
@@ -310,6 +331,9 @@ async function loadListeningStatus() {
     const ms = data?.monitorStatus
     if (ms != null && !Number.isNaN(Number(ms))) {
       monitorStatus.value = Number(ms)
+      if (Number(ms) === 1) {
+        void reseedListeningGeoQuiet()
+      }
     }
   } catch (e) {
     assignedError.value = e?.message || String(e)
@@ -322,8 +346,13 @@ async function loadListeningStatus() {
 watch(
   authed,
   (v) => {
-    if (v) loadListeningStatus()
-    else monitorStatus.value = null
+    if (v) {
+      loadListeningStatus()
+      connectDriverWs()
+    } else {
+      monitorStatus.value = null
+      disconnectWs()
+    }
   },
   { immediate: true },
 )
@@ -334,7 +363,41 @@ function apiBaseToWsBase(base) {
   return 'ws://' + b.replace(/^http:\/\//, '')
 }
 
-async function loadAssigned() {
+function resolveDriverWsBaseUrl() {
+  const fromEnv = import.meta?.env?.VITE_DRIVER_WS_BASE_URL
+  if (typeof fromEnv === 'string' && fromEnv.trim()) {
+    return fromEnv.trim().replace(/\/$/, '')
+  }
+  // 默认沿用 API_BASE_URL；若它指向网关且网关未做 WS 转发，可在 .env.development 配置 VITE_DRIVER_WS_BASE_URL
+  return apiBaseToWsBase(API_BASE_URL)
+}
+
+function stopWsPing() {
+  if (wsPingTimer) {
+    clearInterval(wsPingTimer)
+    wsPingTimer = null
+  }
+}
+
+function startWsPing() {
+  stopWsPing()
+  if (!wsConn) return
+  wsPingTimer = setInterval(() => {
+    try {
+      if (wsConn && wsConn.readyState === WebSocket.OPEN) {
+        wsConn.send('ping')
+      }
+    } catch {
+      // ignore
+    }
+  }, 15_000)
+}
+
+async function loadAssigned(forceHttp = false) {
+  if (ENABLE_WS_ASSIGNED && wsConnected.value && !forceHttp) {
+    // WS 已接管 assigned 推送；派单变更后可用 forceHttp 立即与 HTTP 对齐
+    return
+  }
   assignedLoading.value = true
   assignedError.value = ''
   try {
@@ -357,7 +420,7 @@ async function loadAssigned() {
 
 async function onRefreshAssigned() {
   if (assignedLoading.value) return
-  await loadAssigned()
+  await loadAssigned(true)
 }
 
 async function setOnline(online) {
@@ -366,8 +429,8 @@ async function setOnline(online) {
     assignedError.value = '无法解析司机 ID（请重新登录）'
     return
   }
-  if (online && isListeningOrBusy.value) return
   if (!online && isMonitorOffline.value) return
+  const wasOrderListening = monitorStatus.value === 1
   onlineLoading.value = true
   assignedError.value = ''
   const body = { online }
@@ -389,10 +452,14 @@ async function setOnline(online) {
     await postJson(`/driver/api/v1/drivers/${id}/online`, body)
     monitorStatus.value = online ? 1 : 0
     if (online) {
-      await loadAssigned()
+      await loadAssigned(true)
     }
     if (online && body.lat != null && body.lng != null) {
-      showToast({ type: 'success', message: '已上线，位置已上报' })
+      if (wasOrderListening) {
+        showToast({ type: 'success', message: '位置已更新，已重新写入司机池' })
+      } else {
+        showToast({ type: 'success', message: '已上线，位置已上报' })
+      }
     } else if (online) {
       showToast({ type: 'success', message: '已上线听单' })
     } else {
@@ -415,7 +482,7 @@ async function acceptOrder(orderNo) {
   assignedError.value = ''
   try {
     await postJson(`/driver/api/v1/orders/${encodeURIComponent(orderNo)}/accept`, { driverId: id })
-    await loadAssigned()
+    await loadAssigned(true)
     trip.beginFollowingOrder(orderNo)
     showToast({ type: 'success', message: '已接单' })
   } catch (e) {
@@ -465,7 +532,7 @@ async function rejectOrder(orderNo) {
       driverId: id,
       reasonCode,
     })
-    await loadAssigned()
+    await loadAssigned(true)
     showToast({ type: 'success', message: '已拒绝，订单已收回' })
   } catch (e) {
     assignedError.value = e?.message || String(e)
@@ -492,7 +559,7 @@ async function driverCancelAcceptedTrip() {
     return
   }
   await trip.cancelBeforeArrive(reasonCode)
-  await loadAssigned()
+  await loadAssigned(true)
 }
 
 async function connectDriverWs() {
@@ -509,13 +576,29 @@ async function connectDriverWs() {
       wsConn.close()
       wsConn = null
     }
-    const url = `${apiBaseToWsBase(API_BASE_URL)}/driver/ws/v1/stream?token=${encodeURIComponent(wsTok)}`
+    const url = `${resolveDriverWsBaseUrl()}/driver/ws/v1/stream?token=${encodeURIComponent(wsTok)}`
     wsConn = new WebSocket(url)
     wsConn.onopen = () => {
       wsLog.value = [...wsLog.value, '[open]']
+      wsConnected.value = true
+      startWsPing()
     }
     wsConn.onmessage = (ev) => {
-      wsLog.value = [...wsLog.value, `[msg] ${ev.data}`]
+      const raw = ev?.data
+      wsLog.value = [...wsLog.value, `[msg] ${raw}`]
+      if (typeof raw === 'string' && raw.startsWith('{')) {
+        try {
+          const msg = JSON.parse(raw)
+          if (msg?.type === 'ASSIGNED_LIST') {
+            const list = msg?.data?.list || []
+            assigned.value = Array.isArray(list)
+              ? list.filter((item) => isPendingAssignListStatus(item?.status))
+              : []
+          }
+        } catch {
+          // ignore
+        }
+      }
     }
     wsConn.onerror = () => {
       wsLog.value = [...wsLog.value, '[error]']
@@ -523,6 +606,8 @@ async function connectDriverWs() {
     wsConn.onclose = (ev) => {
       wsLog.value = [...wsLog.value, `[close] code=${ev.code}`]
       wsConn = null
+      wsConnected.value = false
+      stopWsPing()
     }
   } catch (e) {
     assignedError.value = e?.message || String(e)
@@ -535,9 +620,22 @@ function disconnectWs() {
     wsConn.close()
     wsConn = null
   }
+  wsConnected.value = false
+  stopWsPing()
 }
 
 async function logoutAll() {
+  try {
+    await showConfirmDialog({
+      title: '确认退出登录',
+      message:
+        '退出后，当前所有待接指派单将自动拒绝，乘客端会进入重新派单；效果与手动拒单相同（含一段时间内不再与同一乘客匹配）。已接单进行中的行程不会因此被取消。',
+      confirmButtonText: '仍要退出',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
   disconnectWs()
   trip.clearActiveTrip()
   assigned.value = []
@@ -911,10 +1009,10 @@ async function logoutAll() {
               type="primary"
               round
               :loading="onlineLoading"
-              :disabled="monitorStatusLoading || isListeningOrBusy"
+              :disabled="monitorStatusLoading || onlineLoading || monitorStatus === 2"
               @click="setOnline(true)"
             >
-              {{ onlineLoading ? '…' : '上线听单' }}
+              {{ onlineLoading ? '…' : monitorStatus === 1 ? '刷新位置' : '上线听单' }}
             </van-button>
             <van-button
               type="warning"
@@ -1024,34 +1122,6 @@ async function logoutAll() {
               </template>
             </van-card>
           </div>
-
-          <van-cell-group inset title="更多功能入口" class="section-gap entry-grid">
-            <van-grid :column-num="3" :border="false" clickable>
-              <van-grid-item icon="balance-o" text="钱包（待开发）" @click="openTodo('钱包')" />
-              <van-grid-item icon="records-o" text="行程记录（待开发）" @click="openTodo('行程记录')" />
-              <van-grid-item icon="like-o" text="服务分（待开发）" @click="openTodo('服务分')" />
-              <van-grid-item icon="setting-o" text="设置（待开发）" @click="openTodo('设置')" />
-            </van-grid>
-          </van-cell-group>
-
-          <van-cell-group inset title="我的 / 设置" class="section-gap">
-            <van-cell title="更换车队" label="提交申请 / 暂停接单 / 审核后生效" is-link clickable @click="openTeamChange">
-              <template #icon>
-                <van-icon name="exchange" class="my-cell-icon" />
-              </template>
-            </van-cell>
-            <van-cell title="换队申请状态" label="查看审核进度 / 撤销并恢复接单" is-link clickable @click="openTeamChangeStatus">
-              <template #icon>
-                <van-icon name="notes-o" class="my-cell-icon" />
-              </template>
-            </van-cell>
-            <van-cell title="其他功能" label="功能待开发" is-link clickable @click="openTodo('其他功能')">
-              <template #icon>
-                <van-icon name="apps-o" class="my-cell-icon" />
-              </template>
-            </van-cell>
-          </van-cell-group>
-          </template>
 
           <van-cell-group v-if="trip.activeTripOrderNo" inset title="行程" class="trip-panel">
             <van-cell>
@@ -1202,6 +1272,34 @@ async function logoutAll() {
               :scrollable="false"
             />
           </van-cell-group>
+
+          <van-cell-group inset title="更多功能入口" class="section-gap entry-grid">
+            <van-grid :column-num="3" :border="false" clickable>
+              <van-grid-item icon="balance-o" text="钱包（待开发）" @click="openTodo('钱包')" />
+              <van-grid-item icon="records-o" text="行程记录（待开发）" @click="openTodo('行程记录')" />
+              <van-grid-item icon="like-o" text="服务分（待开发）" @click="openTodo('服务分')" />
+              <van-grid-item icon="setting-o" text="设置（待开发）" @click="openTodo('设置')" />
+            </van-grid>
+          </van-cell-group>
+
+          <van-cell-group inset title="我的 / 设置" class="section-gap">
+            <van-cell title="更换车队" label="提交申请 / 暂停接单 / 审核后生效" is-link clickable @click="openTeamChange">
+              <template #icon>
+                <van-icon name="exchange" class="my-cell-icon" />
+              </template>
+            </van-cell>
+            <van-cell title="换队申请状态" label="查看审核进度 / 撤销并恢复接单" is-link clickable @click="openTeamChangeStatus">
+              <template #icon>
+                <van-icon name="notes-o" class="my-cell-icon" />
+              </template>
+            </van-cell>
+            <van-cell title="其他功能" label="功能待开发" is-link clickable @click="openTodo('其他功能')">
+              <template #icon>
+                <van-icon name="apps-o" class="my-cell-icon" />
+              </template>
+            </van-cell>
+          </van-cell-group>
+          </template>
 
           <van-cell-group inset title="WebSocket（可选）" class="section-gap">
             <van-cell title="说明" value="先 ws-token 再连 /driver/ws/v1/stream" />
