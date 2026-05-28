@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, unref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, unref, watch } from 'vue'
 import { showConfirmDialog, showToast } from 'vant'
 
 import { API_BASE_URL, getJson, getToken, postJson } from './api/http'
@@ -56,7 +56,12 @@ const rejectLoading = ref(null)
 const wsLog = ref([])
 const wsConnected = ref(false)
 let wsPingTimer = null
+let wsReconnectTimer = null
+let wsReconnectAttempt = 0
+let wsConnGeneration = 0
+let wsShouldReconnect = false
 const ENABLE_WS_ASSIGNED = true
+const WS_RECONNECT_MAX_MS = 30_000
 const reasonSheetShow = ref(false)
 const reasonSheetTitle = ref('')
 let reasonSheetResolver = null
@@ -379,6 +384,29 @@ function stopWsPing() {
   }
 }
 
+function stopWsReconnect() {
+  if (wsReconnectTimer) {
+    clearTimeout(wsReconnectTimer)
+    wsReconnectTimer = null
+  }
+}
+
+function nextDriverWsBackoffMs() {
+  const step = Math.min(WS_RECONNECT_MAX_MS, 2000 * 2 ** wsReconnectAttempt)
+  wsReconnectAttempt += 1
+  return Math.floor(step + Math.random() * 800)
+}
+
+function scheduleDriverWsReconnect(connGen) {
+  stopWsReconnect()
+  if (!wsShouldReconnect || !authed.value || connGen !== wsConnGeneration) return
+  wsReconnectTimer = setTimeout(() => {
+    wsReconnectTimer = null
+    if (!wsShouldReconnect || !authed.value || connGen !== wsConnGeneration) return
+    void connectDriverWs({ preserveLog: true })
+  }, nextDriverWsBackoffMs())
+}
+
 function startWsPing() {
   stopWsPing()
   if (!wsConn) return
@@ -562,28 +590,53 @@ async function driverCancelAcceptedTrip() {
   await loadAssigned(true)
 }
 
-async function connectDriverWs() {
+async function connectDriverWs(options = {}) {
+  if (!authed.value) return
+  wsShouldReconnect = true
+  wsConnGeneration += 1
+  const connGen = wsConnGeneration
+  stopWsReconnect()
+  stopWsPing()
+  if (wsConn) {
+    try {
+      wsConn.close(4000, 'reconnect')
+    } catch {
+      // ignore
+    }
+    wsConn = null
+  }
+  wsConnected.value = false
   assignedError.value = ''
-  wsLog.value = []
+  if (!options.preserveLog) wsLog.value = []
   try {
     const data = await postJson('/driver/api/v1/auth/ws-token', {})
     const wsTok = data?.accessToken
+    if (!authed.value || !wsShouldReconnect || connGen !== wsConnGeneration) return
     if (!wsTok) {
       assignedError.value = '未拿到 WS token'
+      await loadAssigned(true)
+      scheduleDriverWsReconnect(connGen)
       return
     }
-    if (wsConn) {
-      wsConn.close()
-      wsConn = null
-    }
     const url = `${resolveDriverWsBaseUrl()}/driver/ws/v1/stream?token=${encodeURIComponent(wsTok)}`
-    wsConn = new WebSocket(url)
-    wsConn.onopen = () => {
+    const sock = new WebSocket(url)
+    wsConn = sock
+    sock.onopen = () => {
+      if (!authed.value || !wsShouldReconnect || connGen !== wsConnGeneration) {
+        try {
+          sock.close(4000, 'stale')
+        } catch {
+          // ignore
+        }
+        return
+      }
       wsLog.value = [...wsLog.value, '[open]']
       wsConnected.value = true
+      wsReconnectAttempt = 0
       startWsPing()
     }
-    wsConn.onmessage = (ev) => {
+    sock.onmessage = (ev) => {
+      if (connGen !== wsConnGeneration || wsConn !== sock) return
       const raw = ev?.data
       wsLog.value = [...wsLog.value, `[msg] ${raw}`]
       if (typeof raw === 'string' && raw.startsWith('{')) {
@@ -600,29 +653,54 @@ async function connectDriverWs() {
         }
       }
     }
-    wsConn.onerror = () => {
+    sock.onerror = () => {
+      if (connGen !== wsConnGeneration || wsConn !== sock) return
       wsLog.value = [...wsLog.value, '[error]']
+      wsConnected.value = false
+      void loadAssigned(true)
     }
-    wsConn.onclose = (ev) => {
+    sock.onclose = (ev) => {
+      if (connGen !== wsConnGeneration) return
       wsLog.value = [...wsLog.value, `[close] code=${ev.code}`]
-      wsConn = null
+      if (wsConn === sock) {
+        wsConn = null
+      }
       wsConnected.value = false
       stopWsPing()
+      void loadAssigned(true)
+      scheduleDriverWsReconnect(connGen)
     }
   } catch (e) {
+    if (connGen !== wsConnGeneration) return
     assignedError.value = e?.message || String(e)
-    maybeDropToLogin(e)
+    wsConnected.value = false
+    const dropped = maybeDropToLogin(e)
+    if (!dropped) {
+      await loadAssigned(true)
+      scheduleDriverWsReconnect(connGen)
+    }
   }
 }
 
 function disconnectWs() {
+  wsShouldReconnect = false
+  wsConnGeneration += 1
+  stopWsReconnect()
   if (wsConn) {
-    wsConn.close()
+    try {
+      wsConn.close(4000, 'manual')
+    } catch {
+      // ignore
+    }
     wsConn = null
   }
   wsConnected.value = false
   stopWsPing()
 }
+
+onBeforeUnmount(() => {
+  disconnectWs()
+})
 
 async function logoutAll() {
   try {
