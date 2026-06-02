@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, ref, unref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, unref, watch } from 'vue'
 import { showConfirmDialog, showToast } from 'vant'
 
 import { API_BASE_URL, getJson, getToken, postJson } from './api/http'
@@ -46,6 +46,7 @@ const {
 const assignedLoading = ref(false)
 const assigned = ref([])
 const assignedError = ref('')
+const countdownNowMs = ref(Date.now())
 const onlineLoading = ref(false)
 /** 运力 monitor_status：0 未听单，1 听单中，2 服务中等；null 表示尚未拉取 */
 const monitorStatus = ref(null)
@@ -57,11 +58,14 @@ const wsLog = ref([])
 const wsConnected = ref(false)
 let wsPingTimer = null
 let wsReconnectTimer = null
+let countdownTimer = null
 let wsReconnectAttempt = 0
 let wsConnGeneration = 0
 let wsShouldReconnect = false
 const ENABLE_WS_ASSIGNED = true
 const WS_RECONNECT_MAX_MS = 30_000
+const WS_PING_MS = 15_000
+const assignedDetailCache = new Map()
 const reasonSheetShow = ref(false)
 const reasonSheetTitle = ref('')
 let reasonSheetResolver = null
@@ -128,9 +132,184 @@ const monitorStatusText = computed(() => {
 const acceptabilityText = computed(() => {
   const can = teamChangeBelonging.value?.canAcceptOrder
   if (typeof can === 'boolean') return can ? '可接单' : '不可接单'
-  if (monitorStatus.value == null) return '未知'
-  return '未知'
+  if (monitorStatus.value === 2) return '服务中'
+  if (monitorStatus.value === 0 || monitorStatus.value === 1) return '可接单'
+  return teamChangeBelongingLoading.value ? '同步中' : '未知'
 })
+
+const assignedCount = computed(() => assigned.value?.length || 0)
+
+const realtimeConnectionText = computed(() => {
+  if (wsConnected.value) return '已连接'
+  return '连接中'
+})
+
+const workState = computed(() => {
+  if (trip.activeTripOrderNo) return 'trip'
+  if (assignedCount.value > 0) return 'assigned'
+  if (monitorStatus.value === 1) return 'listening'
+  if (monitorStatus.value === 2) return 'busy'
+  return 'offline'
+})
+
+const workStateTitle = computed(() => {
+  if (workState.value === 'trip') return '行程进行中'
+  if (workState.value === 'assigned') return `${assignedCount.value} 笔待确认指派`
+  if (workState.value === 'listening') return '听单中'
+  if (workState.value === 'busy') return '服务中'
+  return '未上线听单'
+})
+
+const workStateHint = computed(() => {
+  if (workState.value === 'trip') return '按行程状态推进，到达、开始和完单都在下方操作。'
+  if (workState.value === 'assigned') return '请确认乘客行程信息，接单或拒单后会立即同步后端。'
+  if (workState.value === 'listening') return '暂无新指派，保持页面打开可接收 WebSocket 推送。'
+  if (workState.value === 'busy') return '后端标记服务中，当前不会继续派新单。'
+  return '上线后会请求定位，用于附近派单和司机池 GEO 写入。'
+})
+
+const workStateTagType = computed(() => {
+  if (workState.value === 'assigned') return 'warning'
+  if (workState.value === 'trip' || workState.value === 'listening') return 'success'
+  if (workState.value === 'busy') return 'primary'
+  return 'default'
+})
+
+function firstText(...values) {
+  const hit = values.find((v) => v != null && String(v).trim())
+  return hit == null ? '' : String(hit)
+}
+
+function placeText(place) {
+  if (!place) return ''
+  if (typeof place === 'string') return place
+  return firstText(place.name, place.address, place.poiName)
+}
+
+function assignedPickupText(item) {
+  return firstText(placeText(item?.pickup), placeText(item?.origin), item?.originAddress, item?.startAddress, item?.fromAddress)
+}
+
+function assignedDestText(item) {
+  return firstText(
+    placeText(item?.destination),
+    placeText(item?.dest),
+    item?.destAddress,
+    item?.destinationAddress,
+    item?.endAddress,
+    item?.toAddress,
+  )
+}
+
+function assignedDistanceText(item) {
+  const meters = item?.distanceMeters ?? item?.distance ?? item?.driverDistanceMeters
+  const n = Number(meters)
+  if (!Number.isFinite(n) || n <= 0) return ''
+  if (n >= 1000) return `${(n / 1000).toFixed(1)} km`
+  return `${Math.round(n)} m`
+}
+
+function assignedFareText(item) {
+  const amount = item?.estimatedFare ?? item?.estimateAmount ?? item?.fareAmount ?? item?.amount
+  if (amount == null || amount === '') return ''
+  const n = Number(amount)
+  if (!Number.isNaN(n)) return `¥${n.toFixed(2)}`
+  return String(amount)
+}
+
+function parseTimeMs(v) {
+  if (!v) return NaN
+  const d = typeof v === 'number' ? new Date(v) : new Date(String(v))
+  const ms = d.getTime()
+  return Number.isFinite(ms) ? ms : NaN
+}
+
+function offerCountdownSeconds(item) {
+  const expiresAtMs = parseTimeMs(item?.offerExpiresAt)
+  if (!Number.isFinite(expiresAtMs)) return null
+  return Math.max(0, Math.ceil((expiresAtMs - countdownNowMs.value) / 1000))
+}
+
+function offerCountdownText(item) {
+  const seconds = offerCountdownSeconds(item)
+  if (seconds == null) return '等待后端确认窗口'
+  if (seconds <= 0) return '已超时，等待系统释放'
+  return `${seconds}s 后自动拒单`
+}
+
+function isOfferExpired(item) {
+  const seconds = offerCountdownSeconds(item)
+  return seconds != null && seconds <= 0
+}
+
+function offerCountdownStyle(item) {
+  const seconds = offerCountdownSeconds(item)
+  if (seconds == null) return { '--offer-countdown-progress': '0%' }
+  const pct = Math.max(0, Math.min(100, (seconds / 30) * 100))
+  return { '--offer-countdown-progress': `${pct}%` }
+}
+
+function mergeAssignedDetail(item, detail) {
+  if (!detail) return item
+  return {
+    ...item,
+    originAddress: item?.originAddress ?? detail.originAddress,
+    destAddress: item?.destAddress ?? detail.destAddress,
+    estimatedFare: item?.estimatedFare ?? detail.estimatedAmount,
+    estimateAmount: item?.estimateAmount ?? detail.estimatedAmount,
+    status: item?.status ?? detail.status,
+  }
+}
+
+function needsAssignedDetail(item) {
+  return item?.orderNo && (!assignedPickupText(item) || !assignedDestText(item) || !assignedFareText(item))
+}
+
+async function hydrateAssignedDetails(raw) {
+  const list = toVisibleAssignedList(raw)
+  return Promise.all(
+    list.map(async (item) => {
+      if (!needsAssignedDetail(item)) return item
+      const orderNo = String(item.orderNo)
+      const cached = assignedDetailCache.get(orderNo)
+      if (cached) return mergeAssignedDetail(item, cached)
+      try {
+        const detail = await getJson('/driver/api/v1/orders/' + encodeURIComponent(orderNo))
+        assignedDetailCache.set(orderNo, detail)
+        return mergeAssignedDetail(item, detail)
+      } catch {
+        return item
+      }
+    }),
+  )
+}
+
+function toVisibleAssignedList(raw) {
+  const list = Array.isArray(raw) ? raw : []
+  return list.filter((item) => isPendingAssignListStatus(item?.status))
+}
+
+function setAssignedList(raw, { preservePendingConfirm = false } = {}) {
+  const next = toVisibleAssignedList(raw)
+  if (!preservePendingConfirm) {
+    assigned.value = next
+    return
+  }
+  const currentByOrderNo = new Map((assigned.value || []).map((item) => [item?.orderNo, item]))
+  assigned.value = next.map((item) => {
+    const current = currentByOrderNo.get(item?.orderNo)
+    if (current?.status === 'PENDING_DRIVER_CONFIRM' && item?.status === 'ASSIGNED') {
+      return { ...item, ...current }
+    }
+    return item
+  })
+}
+
+function shortOrderNo(orderNo) {
+  if (!orderNo) return '-'
+  const s = String(orderNo)
+  return s.length > 12 ? `${s.slice(0, 6)}...${s.slice(-6)}` : s
+}
 
 function fmtTime(v) {
   if (!v) return '-'
@@ -353,6 +532,8 @@ watch(
   (v) => {
     if (v) {
       loadListeningStatus()
+      loadTeamChangeBelonging()
+      loadAssigned(true)
       connectDriverWs()
     } else {
       monitorStatus.value = null
@@ -407,18 +588,34 @@ function scheduleDriverWsReconnect(connGen) {
   }, nextDriverWsBackoffMs())
 }
 
+function sendDriverWsPing(reason = 'timer') {
+  try {
+    if (wsConn && wsConn.readyState === WebSocket.OPEN) {
+      wsConn.send('ping')
+      return true
+    }
+  } catch {
+    // ignore
+  }
+  if (reason !== 'timer') {
+    wsConnected.value = false
+  }
+  return false
+}
+
 function startWsPing() {
   stopWsPing()
   if (!wsConn) return
+  sendDriverWsPing('open')
   wsPingTimer = setInterval(() => {
-    try {
-      if (wsConn && wsConn.readyState === WebSocket.OPEN) {
-        wsConn.send('ping')
-      }
-    } catch {
-      // ignore
-    }
-  }, 15_000)
+    sendDriverWsPing('timer')
+  }, WS_PING_MS)
+}
+
+function reviveDriverWs(reason = 'visibility') {
+  if (!wsShouldReconnect || !authed.value) return
+  if (sendDriverWsPing(reason)) return
+  void connectDriverWs({ preserveLog: true })
 }
 
 async function loadAssigned(forceHttp = false) {
@@ -430,7 +627,7 @@ async function loadAssigned(forceHttp = false) {
   assignedError.value = ''
   try {
     const raw = (await getJson('/driver/api/v1/orders/assigned')) || []
-    assigned.value = raw.filter((item) => isPendingAssignListStatus(item?.status))
+    setAssignedList(await hydrateAssignedDetails(raw))
     const tripSt = trip.activeTrip?.status
     if (tripSt === 5 || tripSt === 6) {
       trip.clearActiveTrip()
@@ -644,9 +841,10 @@ async function connectDriverWs(options = {}) {
           const msg = JSON.parse(raw)
           if (msg?.type === 'ASSIGNED_LIST') {
             const list = msg?.data?.list || []
-            assigned.value = Array.isArray(list)
-              ? list.filter((item) => isPendingAssignListStatus(item?.status))
-              : []
+            void hydrateAssignedDetails(list).then((hydrated) => {
+              if (connGen !== wsConnGeneration || wsConn !== sock) return
+              setAssignedList(hydrated, { preservePendingConfirm: true })
+            })
           }
         } catch {
           // ignore
@@ -699,7 +897,29 @@ function disconnectWs() {
 }
 
 onBeforeUnmount(() => {
+  window.removeEventListener('focus', reviveDriverWs)
+  window.removeEventListener('online', reviveDriverWs)
+  document.removeEventListener('visibilitychange', onDriverVisibilityChange)
+  if (countdownTimer) {
+    clearInterval(countdownTimer)
+    countdownTimer = null
+  }
   disconnectWs()
+})
+
+function onDriverVisibilityChange() {
+  if (document.visibilityState === 'visible') {
+    reviveDriverWs('visible')
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('focus', reviveDriverWs)
+  window.addEventListener('online', reviveDriverWs)
+  document.addEventListener('visibilitychange', onDriverVisibilityChange)
+  countdownTimer = setInterval(() => {
+    countdownNowMs.value = Date.now()
+  }, 1000)
 })
 
 async function logoutAll() {
@@ -728,6 +948,135 @@ async function logoutAll() {
 <template>
   <van-config-provider :theme-vars="themeVars">
     <div class="page page--driver">
+      <template v-if="!authed">
+        <section class="driver-login-page">
+          <div class="driver-login-visual" aria-hidden="true">
+            <div class="driver-login-visual__road" />
+            <div class="driver-login-visual__card driver-login-visual__card--top">听单</div>
+            <div class="driver-login-visual__card driver-login-visual__card--bottom">接驾</div>
+          </div>
+
+          <div class="driver-login-brand">
+            <div class="driver-login-brand__mark">司</div>
+            <div>
+              <div class="driver-login-brand__name">司机工作台</div>
+              <div class="driver-login-brand__sub">登录后上线听单、处理指派与行程</div>
+            </div>
+          </div>
+
+          <van-cell-group inset :title="showRegister ? '司机注册' : '司机登录'" class="driver-login-card">
+            <van-tabs v-model:active="authTab" shrink animated>
+              <van-tab title="验证码" name="sms">
+                <van-field v-model="phone" label="手机号" type="tel" maxlength="11" placeholder="手机号" clearable />
+                <van-field v-model="smsCode" center clearable label="验证码" placeholder="验证码">
+                  <template #button>
+                    <van-button size="small" type="primary" :loading="smsSending" @click="sendSms">
+                      {{ smsSending ? '发送中' : '发送' }}
+                    </van-button>
+                  </template>
+                </van-field>
+                <p v-if="smsHint" class="van-field__error-message auth-hint-center">
+                  {{ smsHint }}
+                </p>
+                <div class="driver-login-submit-row">
+                  <van-button
+                    v-if="!showRegister"
+                    block
+                    type="primary"
+                    native-type="button"
+                    class="driver-login-submit-btn"
+                    :loading="authLoading"
+                    @click="loginSms"
+                  >
+                    登录并进入首页
+                  </van-button>
+                  <van-button
+                    v-else
+                    block
+                    type="primary"
+                    native-type="button"
+                    class="driver-login-submit-btn"
+                    :loading="authLoading"
+                    @click="registerSms"
+                  >
+                    注册并进入首页
+                  </van-button>
+                </div>
+              </van-tab>
+              <van-tab title="密码" name="pwd">
+                <van-field v-model="phone" label="手机号" type="tel" maxlength="11" placeholder="手机号" clearable />
+                <van-field v-model="password" type="password" label="密码" placeholder="密码" />
+                <p class="auth-tip">若未设置密码，可改用验证码或先注册。</p>
+                <template v-if="showRegister">
+                  <van-field v-model="smsCode" center clearable label="验证码" placeholder="验证码">
+                    <template #button>
+                      <van-button size="small" type="primary" :loading="smsSending" @click="sendSms">
+                        {{ smsSending ? '发送中' : '发送' }}
+                      </van-button>
+                    </template>
+                  </van-field>
+                  <p v-if="smsHint" class="van-field__error-message auth-hint-center">
+                    {{ smsHint }}
+                  </p>
+                </template>
+                <div class="driver-login-submit-row">
+                  <van-button
+                    v-if="!showRegister"
+                    block
+                    type="primary"
+                    native-type="button"
+                    class="driver-login-submit-btn"
+                    :loading="authLoading"
+                    @click="loginPassword"
+                  >
+                    登录并进入首页
+                  </van-button>
+                  <van-button
+                    v-else
+                    block
+                    type="primary"
+                    native-type="button"
+                    class="driver-login-submit-btn"
+                    :loading="authLoading"
+                    @click="registerPassword"
+                  >
+                    注册并进入首页
+                  </van-button>
+                </div>
+              </van-tab>
+            </van-tabs>
+            <van-notice-bar
+              v-if="authError"
+              color="#ee0a24"
+              background="#fef0f0"
+              left-icon="warning-o"
+              :text="authError"
+              wrapable
+              :scrollable="false"
+            />
+            <van-cell>
+              <template #value>
+                <div class="auth-switch-row">
+                  <span class="auth-switch-row__label">{{ showRegister ? '已有账号？' : '没有账号？' }}</span>
+                  <van-button v-if="!showRegister" size="small" plain hairline type="primary" @click="openRegister">
+                    去注册
+                  </van-button>
+                  <van-button v-else size="small" plain hairline type="primary" @click="backToLogin">
+                    返回登录
+                  </van-button>
+                </div>
+              </template>
+            </van-cell>
+          </van-cell-group>
+
+          <div class="driver-login-footer">
+            <span>网关</span>
+            <span class="mono-tight">{{ API_BASE_URL }}</span>
+          </div>
+        </section>
+      </template>
+
+      <template v-else>
       <van-nav-bar class="app-nav" :title="pageTitle" :border="false" safe-area-inset-top>
         <template #right>
           <span class="nav-eyebrow">联调工具</span>
@@ -750,121 +1099,39 @@ async function logoutAll() {
         </div>
       </div>
 
+      <div class="driver-quick-actions">
+        <van-button
+          type="primary"
+          round
+          :loading="onlineLoading"
+          :disabled="monitorStatusLoading || onlineLoading || monitorStatus === 2"
+          @click="setOnline(true)"
+        >
+          {{ onlineLoading ? '处理中...' : monitorStatus === 1 ? '刷新位置' : '上线听单' }}
+        </van-button>
+        <van-button
+          type="warning"
+          round
+          plain
+          :loading="onlineLoading"
+          :disabled="monitorStatusLoading || isMonitorOffline"
+          @click="setOnline(false)"
+        >
+          下线
+        </van-button>
+        <button
+          type="button"
+          class="refresh-assigned-btn"
+          :disabled="assignedLoading"
+          @click="onRefreshAssigned"
+          @touchend.prevent="onRefreshAssigned"
+        >
+          {{ assignedLoading ? '刷新中' : '刷新指派单' }}
+        </button>
+        <van-button round plain hairline type="danger" @click="logoutAll">退出登录</van-button>
+      </div>
+
       <main class="page-main">
-        <van-notice-bar
-          v-if="!authed"
-          left-icon="info-o"
-          :text="`网关 ${API_BASE_URL}`"
-          wrapable
-          :scrollable="false"
-        />
-
-        <van-cell-group v-if="!authed" inset :title="showRegister ? '注册' : '登录'" class="section-gap">
-          <van-tabs v-model:active="authTab" shrink animated>
-            <van-tab title="验证码" name="sms">
-              <van-field v-model="phone" label="手机号" type="tel" maxlength="11" placeholder="手机号" clearable />
-              <van-field v-model="smsCode" center clearable label="验证码" placeholder="验证码">
-                <template #button>
-                  <van-button size="small" type="primary" :loading="smsSending" @click="sendSms">
-                    {{ smsSending ? '发送中' : '发送' }}
-                  </van-button>
-                </template>
-              </van-field>
-              <p v-if="smsHint" class="van-field__error-message auth-hint-center">
-                {{ smsHint }}
-              </p>
-              <div style="padding: 8px 16px 16px">
-                <van-button
-                  v-if="!showRegister"
-                  block
-                  round
-                  type="primary"
-                  native-type="button"
-                  :loading="authLoading"
-                  @click="loginSms"
-                >
-                  验证码登录
-                </van-button>
-                <van-button
-                  v-else
-                  block
-                  round
-                  type="primary"
-                  native-type="button"
-                  :loading="authLoading"
-                  @click="registerSms"
-                >
-                  验证码注册
-                </van-button>
-              </div>
-            </van-tab>
-            <van-tab title="密码" name="pwd">
-              <van-field v-model="phone" label="手机号" type="tel" maxlength="11" placeholder="手机号" clearable />
-              <van-field v-model="password" type="password" label="密码" placeholder="密码" />
-              <p class="auth-tip">若未设置密码，可改用验证码或先注册。</p>
-              <template v-if="showRegister">
-                <van-field v-model="smsCode" center clearable label="验证码" placeholder="验证码">
-                  <template #button>
-                    <van-button size="small" type="primary" :loading="smsSending" @click="sendSms">
-                      {{ smsSending ? '发送中' : '发送' }}
-                    </van-button>
-                  </template>
-                </van-field>
-                <p v-if="smsHint" class="van-field__error-message auth-hint-center">
-                  {{ smsHint }}
-                </p>
-              </template>
-              <div style="padding: 8px 16px 16px">
-                <van-button
-                  v-if="!showRegister"
-                  block
-                  round
-                  type="primary"
-                  native-type="button"
-                  :loading="authLoading"
-                  @click="loginPassword"
-                >
-                  密码登录
-                </van-button>
-                <van-button
-                  v-else
-                  block
-                  round
-                  type="primary"
-                  native-type="button"
-                  :loading="authLoading"
-                  @click="registerPassword"
-                >
-                  密码注册
-                </van-button>
-              </div>
-            </van-tab>
-          </van-tabs>
-          <van-notice-bar
-            v-if="authError"
-            color="#ee0a24"
-            background="#fef0f0"
-            left-icon="warning-o"
-            :text="authError"
-            wrapable
-            :scrollable="false"
-          />
-          <van-cell>
-            <template #value>
-              <div class="auth-switch-row">
-                <span class="auth-switch-row__label">{{ showRegister ? '已有账号？' : '没有账号？' }}</span>
-                <van-button v-if="!showRegister" size="small" plain hairline type="primary" @click="openRegister">
-                  去注册
-                </van-button>
-                <van-button v-else size="small" plain hairline type="primary" @click="backToLogin">
-                  返回登录
-                </van-button>
-              </div>
-            </template>
-          </van-cell>
-        </van-cell-group>
-
-        <template v-else>
           <template v-if="view !== 'home'">
             <van-cell-group inset :title="view === 'teamChangeApply' ? '更换车队' : '换队申请状态'" class="section-gap">
               <van-cell>
@@ -1044,170 +1311,176 @@ async function logoutAll() {
           </template>
 
           <template v-else>
-          <van-cell-group inset title="工作台">
-            <van-cell>
-              <template #title>
-                <span class="token-hint">
-                  Token 含 <code>tv</code> / <code>audit</code> ；退出会调用服务端作废会话。
-                </span>
-              </template>
-            </van-cell>
-          </van-cell-group>
-
-          <van-cell-group inset title="首页（登录后）" class="section-gap">
-            <van-cell>
-              <template #title>
-                <div class="home-status-row">
-                  <div class="home-status-row__left">
-                    <span class="home-status-row__label">接单资格</span>
-                    <van-tag type="success" plain>{{ acceptabilityText }}</van-tag>
-                  </div>
-                  <div class="home-status-row__right">
-                    <span class="home-status-row__label">听单状态</span>
-                    <van-tag type="primary" plain>{{ monitorStatusText }}</van-tag>
-                  </div>
+          <section class="driver-dashboard">
+            <div class="driver-state-card">
+              <div class="driver-state-card__top">
+                <div>
+                  <div class="driver-state-card__eyebrow">当前工作状态</div>
+                  <h1 class="driver-state-card__title">{{ workStateTitle }}</h1>
                 </div>
-              </template>
-            </van-cell>
-          </van-cell-group>
-
-          <van-notice-bar
-            class="section-gap"
-            left-icon="location-o"
-            color="#323233"
-            background="#f7f8fa"
-            text="上线听单将请求浏览器定位，用于附近派单（写入司机池 GEO）；拒绝权限仍可上线，但不参与距离匹配。"
-            wrapable
-            :scrollable="false"
-          />
-
-          <div class="toolbar-panel section-gap">
-            <div class="toolbar-row">
-            <van-button
-              type="primary"
-              round
-              :loading="onlineLoading"
-              :disabled="monitorStatusLoading || onlineLoading || monitorStatus === 2"
-              @click="setOnline(true)"
-            >
-              {{ onlineLoading ? '…' : monitorStatus === 1 ? '刷新位置' : '上线听单' }}
-            </van-button>
-            <van-button
-              type="warning"
-              round
-              plain
-              :loading="onlineLoading"
-              :disabled="monitorStatusLoading || isMonitorOffline"
-              @click="setOnline(false)"
-            >
-              {{ onlineLoading ? '…' : '下线' }}
-            </van-button>
-            <button
-              type="button"
-              class="refresh-assigned-btn"
-              :disabled="assignedLoading"
-              @click="onRefreshAssigned"
-              @touchend.prevent="onRefreshAssigned"
-            >
-              {{ assignedLoading ? '加载中' : '刷新指派单' }}
-            </button>
-            <van-button round plain hairline type="danger" @click="logoutAll">退出登录</van-button>
+                <van-tag :type="workStateTagType" size="medium" plain>{{ monitorStatusText }}</van-tag>
+              </div>
+              <p class="driver-state-card__hint">{{ workStateHint }}</p>
+              <div class="driver-state-grid">
+                <div class="driver-state-grid__item">
+                  <span>接单资格</span>
+                  <strong>{{ acceptabilityText }}</strong>
+                </div>
+                <div class="driver-state-grid__item">
+                  <span>待确认</span>
+                  <strong>{{ assignedCount }}</strong>
+                </div>
+                <div class="driver-state-grid__item">
+                  <span>实时连接</span>
+                  <strong>{{ realtimeConnectionText }}</strong>
+                </div>
+              </div>
+              <div class="driver-state-actions">
+                <van-button
+                  type="primary"
+                  block
+                  :loading="onlineLoading"
+                  :disabled="monitorStatusLoading || onlineLoading || monitorStatus === 2"
+                  @click="setOnline(true)"
+                >
+                  {{ onlineLoading ? '处理中...' : monitorStatus === 1 ? '刷新位置' : '上线听单' }}
+                </van-button>
+                <van-button
+                  plain
+                  block
+                  type="warning"
+                  :loading="onlineLoading"
+                  :disabled="monitorStatusLoading || isMonitorOffline"
+                  @click="setOnline(false)"
+                >
+                  下线
+                </van-button>
+              </div>
             </div>
-          </div>
 
-          <van-notice-bar
-            v-if="assignedError"
-            color="#ee0a24"
-            background="#fef0f0"
-            left-icon="warning-o"
-            :text="assignedError"
-            wrapable
-            :scrollable="false"
-            class="section-gap"
-          />
-
-          <van-notice-bar
-            v-if="trip.activeTripOrderNo && (!assigned || assigned.length === 0)"
-            left-icon="info-o"
-            color="#1989fa"
-            background="#ecf5ff"
-            text="暂无新指派单。已接单～行程中（ACCEPTED～STARTED）不会再派新单。"
-            wrapable
-            :scrollable="false"
-            class="section-gap"
-          />
-
-          <van-empty
-            v-if="assigned && assigned.length === 0 && !trip.activeTripOrderNo"
-            image="search"
-            description="暂无指派单（未派单或订单服务未启动时为空）"
-          />
-
-          <div v-else-if="assigned && assigned.length > 0" class="section-gap">
             <van-notice-bar
-              v-if="assigned.length > 1"
-              left-icon="volume-o"
-              color="#ed6a0c"
-              background="#fff7e8"
-              text="当前有多笔待确认；确认其中一单后，其余 ASSIGNED / 待确认 订单将由系统自动取消。"
+              v-if="assignedError"
+              color="#ee0a24"
+              background="#fef0f0"
+              left-icon="warning-o"
+              :text="assignedError"
               wrapable
               :scrollable="false"
-              class="assign-multi-hint"
+              class="section-gap"
             />
-            <van-card v-for="item in assigned" :key="item.orderNo" class="assign-card">
-              <template #title>
-                <span class="mono-tight">{{ item.orderNo }}</span>
-              </template>
-              <template #tags>
-                <van-tag
-                  plain
-                  :type="item.status === 'PENDING_DRIVER_CONFIRM' ? 'warning' : 'primary'"
-                >
-                  {{ formatAssignedItemStatus(item.status) }}
-                </van-tag>
-              </template>
-              <template #desc>
-                <div v-if="item.pickup?.name" class="assign-pickup">上车：{{ item.pickup.name }}</div>
-                <div v-if="item.offerExpiresAt" class="assign-deadline">确认截止：{{ item.offerExpiresAt }}</div>
-              </template>
-              <template #footer>
-                <div class="assign-card__actions">
-                  <van-button
-                    plain
-                    hairline
-                    type="danger"
-                    size="small"
-                    round
-                    block
-                    :loading="rejectLoading === item.orderNo"
-                    :disabled="acceptLoading === item.orderNo"
-                    @click="rejectOrder(item.orderNo)"
-                  >
-                    {{ rejectLoading === item.orderNo ? '提交中…' : '拒单' }}
-                  </van-button>
-                  <van-button
-                    type="primary"
-                    size="small"
-                    round
-                    block
-                    :loading="acceptLoading === item.orderNo"
-                    :disabled="rejectLoading === item.orderNo"
-                    @click="acceptOrder(item.orderNo)"
-                  >
-                    {{ acceptLoading === item.orderNo ? '提交中…' : '确认接单' }}
-                  </van-button>
-                </div>
-              </template>
-            </van-card>
-          </div>
 
-          <van-cell-group v-if="trip.activeTripOrderNo" inset title="行程" class="trip-panel">
+            <section class="driver-section section-gap">
+              <div class="driver-section__head">
+                <div>
+                  <div class="driver-section__label">接单操作</div>
+                  <h2>乘客指派单</h2>
+                </div>
+                <button
+                  type="button"
+                  class="driver-refresh-btn"
+                  :disabled="assignedLoading"
+                  @click="onRefreshAssigned"
+                  @touchend.prevent="onRefreshAssigned"
+                >
+                  {{ assignedLoading ? '刷新中' : '刷新' }}
+                </button>
+              </div>
+              <van-notice-bar
+                v-if="assigned.length > 1"
+                left-icon="volume-o"
+                color="#ed6a0c"
+                background="#fff7e8"
+                text="当前有多笔待确认；确认其中一单后，其余待确认订单将由系统自动取消。"
+                wrapable
+                :scrollable="false"
+                class="assign-multi-hint"
+              />
+              <div v-if="assigned && assigned.length > 0" class="order-stack">
+                <article v-for="item in assigned" :key="item.orderNo" class="driver-order-card">
+                  <div class="driver-order-card__head">
+                    <div>
+                      <div class="driver-order-card__no">{{ shortOrderNo(item.orderNo) }}</div>
+                      <div class="driver-order-card__sub mono-tight">{{ item.orderNo }}</div>
+                    </div>
+                    <van-tag plain :type="item.status === 'PENDING_DRIVER_CONFIRM' ? 'warning' : 'primary'">
+                      {{ formatAssignedItemStatus(item.status) }}
+                    </van-tag>
+                  </div>
+                  <div class="driver-order-route">
+                    <div class="driver-order-route__row">
+                      <span class="driver-order-route__dot driver-order-route__dot--start" />
+                      <div>
+                        <span>上车点</span>
+                        <strong>{{ assignedPickupText(item) || '等待后端返回' }}</strong>
+                      </div>
+                    </div>
+                    <div class="driver-order-route__row">
+                      <span class="driver-order-route__dot driver-order-route__dot--end" />
+                      <div>
+                        <span>目的地</span>
+                        <strong>{{ assignedDestText(item) || '乘客暂未填写' }}</strong>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="driver-order-meta">
+                    <span v-if="assignedDistanceText(item)">距你 {{ assignedDistanceText(item) }}</span>
+                    <span v-if="assignedFareText(item)">预估 {{ assignedFareText(item) }}</span>
+                    <span v-if="item.offerExpiresAt">截止 {{ fmtTime(item.offerExpiresAt) }}</span>
+                  </div>
+                  <div
+                    v-if="item.status === 'PENDING_DRIVER_CONFIRM'"
+                    class="driver-offer-countdown"
+                    :class="{ 'driver-offer-countdown--expired': isOfferExpired(item) }"
+                    :style="offerCountdownStyle(item)"
+                  >
+                    <div class="driver-offer-countdown__top">
+                      <span>自动拒单倒计时</span>
+                      <strong>{{ offerCountdownText(item) }}</strong>
+                    </div>
+                    <div class="driver-offer-countdown__bar" aria-hidden="true" />
+                  </div>
+                  <div class="driver-order-actions">
+                    <van-button
+                      plain
+                      type="danger"
+                      block
+                      :loading="rejectLoading === item.orderNo"
+                      :disabled="acceptLoading === item.orderNo || isOfferExpired(item)"
+                      @click="rejectOrder(item.orderNo)"
+                    >
+                      {{ rejectLoading === item.orderNo ? '提交中...' : isOfferExpired(item) ? '等待释放' : '拒单' }}
+                    </van-button>
+                    <van-button
+                      type="primary"
+                      block
+                      :loading="acceptLoading === item.orderNo"
+                      :disabled="rejectLoading === item.orderNo || isOfferExpired(item)"
+                      @click="acceptOrder(item.orderNo)"
+                    >
+                      {{ acceptLoading === item.orderNo ? '提交中...' : isOfferExpired(item) ? '已超时' : '确认接单' }}
+                    </van-button>
+                  </div>
+                </article>
+              </div>
+              <van-empty
+                v-else
+                image="search"
+                :description="trip.activeTripOrderNo ? '当前已有进行中行程，暂不接收新指派' : '暂无指派单，保持上线等待乘客下单'"
+              />
+            </section>
+
+          <section v-if="trip.activeTripOrderNo" class="driver-section section-gap trip-panel">
+            <div class="driver-section__head">
+              <div>
+                <div class="driver-section__label">行程操作</div>
+                <h2>当前行程</h2>
+              </div>
+              <van-button size="small" plain hairline type="primary" @click="trip.dismissTripPanel">
+                关闭
+              </van-button>
+            </div>
+            <van-cell-group inset>
             <van-cell>
-              <template #value>
-                <van-button size="mini" plain hairline type="primary" @click="trip.dismissTripPanel">
-                  关闭面板
-                </van-button>
-              </template>
               <template #title>
                 <span class="mono-tight">{{ trip.activeTripOrderNo }}</span>
               </template>
@@ -1349,7 +1622,8 @@ async function logoutAll() {
               wrapable
               :scrollable="false"
             />
-          </van-cell-group>
+            </van-cell-group>
+          </section>
 
           <van-cell-group inset title="更多功能入口" class="section-gap entry-grid">
             <van-grid :column-num="3" :border="false" clickable>
@@ -1376,7 +1650,16 @@ async function logoutAll() {
                 <van-icon name="apps-o" class="my-cell-icon" />
               </template>
             </van-cell>
+            <van-cell title="退出登录" label="拒绝待确认指派并作废当前会话" clickable @click="logoutAll">
+              <template #icon>
+                <van-icon name="revoke" class="my-cell-icon my-cell-icon--danger" />
+              </template>
+              <template #right-icon>
+                <van-tag type="danger" plain>退出</van-tag>
+              </template>
+            </van-cell>
           </van-cell-group>
+          </section>
           </template>
 
           <van-cell-group inset title="WebSocket（可选）" class="section-gap">
@@ -1391,7 +1674,6 @@ async function logoutAll() {
             </van-cell>
             <pre v-if="wsLog.length" class="ws-log-pre">{{ wsLog.join('\n') }}</pre>
           </van-cell-group>
-        </template>
       </main>
       <van-action-sheet
         v-model:show="reasonSheetShow"
@@ -1403,6 +1685,7 @@ async function logoutAll() {
         @cancel="onReasonSheetCancel"
         @click-overlay="onReasonSheetCancel"
       />
+      </template>
     </div>
   </van-config-provider>
 </template>
