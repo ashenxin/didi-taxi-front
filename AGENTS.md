@@ -66,7 +66,11 @@ npm run build
   - `POST /app/api/v1/auth/logout`
 - 订单：
   - 当前 H5/MVP 推荐一步下单：`POST /app/api/v1/orders`
-  - `/app/api/v1/orders/create` 仅作为历史兼容或后续两段式/Outbox 演进入口；恢复真实下单时不默认使用
+    - 必须带 `Authorization: Bearer <accessToken>` 与 `Idempotency-Key: <uuid>`。
+    - `Idempotency-Key` 在用户一次真实下单点击时生成；同一次网络重试复用同一个 key，新下单意图必须生成新 key。
+    - 后端缺少 `Idempotency-Key` 返回 400；同 key、不同下单内容返回 409；同 key、同内容重复提交返回同一 `orderNo`。
+    - 该入口现在是两段式主路径：HTTP 只保证创建 `CREATED` 订单，派单由后端 Outbox + Kafka + capacity 异步推进；前端通过 WS `ORDER_CHANGED` 或订单详情轮询感知 `PENDING_DRIVER_CONFIRM` / 后续状态。
+  - `/app/api/v1/orders/create` 保留为兼容入口，语义与主入口一致：只创建订单，派单异步推进；恢复真实下单时仍默认使用 `/app/api/v1/orders`
   - 订单详情：`GET /app/api/v1/orders/{orderNo}`
   - 乘客取消：`POST /app/api/v1/orders/{orderNo}/cancel`
 - 乘客 WS：

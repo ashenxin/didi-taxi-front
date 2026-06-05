@@ -5,6 +5,7 @@ import { showConfirmDialog, showToast } from 'vant'
 import { API_BASE_URL, getJson, postJson } from './api/http'
 import { passengerWsStreamUrl, resolvePassengerWsOrigin, tryParseEnvelope } from './utils/passengerOrderWs'
 import { useAuth } from './features/auth/useAuth'
+import { createIdempotencyKey } from './utils/idempotency'
 import {
   CANCEL_BY_SYSTEM,
   formatOrderStatus,
@@ -56,6 +57,7 @@ const loading = ref(false)
 const lastRequest = ref(null)
 const lastResponse = ref(null)
 const lastError = ref(null)
+let pendingCreateOrderAttempt = null
 
 const trackingOrderNo = ref('')
 const liveOrderDetail = ref(null)
@@ -530,13 +532,25 @@ async function placeOrder() {
     dest: fixed.dest,
   }
   lastRequest.value = payload
+  const requestFingerprint = JSON.stringify(payload)
+  if (!pendingCreateOrderAttempt || pendingCreateOrderAttempt.requestFingerprint !== requestFingerprint) {
+    pendingCreateOrderAttempt = {
+      key: createIdempotencyKey(),
+      requestFingerprint,
+    }
+  }
 
   try {
     // 当前 H5/MVP 以一步下单为权威入口；/orders/create 仅保留为兼容/后续演进。
-    const data = await postJson('/app/api/v1/orders', payload)
+    const data = await postJson('/app/api/v1/orders', payload, {
+      headers: { 'Idempotency-Key': pendingCreateOrderAttempt.key },
+    })
+    pendingCreateOrderAttempt = null
     lastResponse.value = data
     if (data?.orderNo) startOrderPoll(data.orderNo)
   } catch (e) {
+    // 未收到服务端响应时保留 key，避免用户重试造成重复下单；明确响应则结束本次尝试。
+    if (e?.httpStatus > 0) pendingCreateOrderAttempt = null
     lastError.value = e?.message || String(e)
     if (e?.code === 409) {
       showToast({ type: 'fail', message: e.message || '您还有一单未完成，请先完单或取消后再试' })
