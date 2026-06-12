@@ -57,6 +57,8 @@ const rejectLoading = ref(null)
 const wsLog = ref([])
 const wsConnected = ref(false)
 let wsPingTimer = null
+let listeningHeartbeatTimer = null
+let listeningHeartbeatInFlight = false
 let wsReconnectTimer = null
 let countdownTimer = null
 let wsReconnectAttempt = 0
@@ -65,6 +67,7 @@ let wsShouldReconnect = false
 const ENABLE_WS_ASSIGNED = true
 const WS_RECONNECT_MAX_MS = 30_000
 const WS_PING_MS = 15_000
+const LISTENING_HEARTBEAT_MS = 15_000
 const LISTENING_INTENT_KEY = 'didi_driver_listening_intent_driver_id'
 const assignedDetailCache = new Map()
 const reasonSheetShow = ref(false)
@@ -98,6 +101,43 @@ function setListeningIntent(enabled) {
   } else {
     sessionStorage.removeItem(LISTENING_INTENT_KEY)
   }
+}
+
+function stopListeningHeartbeat() {
+  if (listeningHeartbeatTimer) {
+    clearInterval(listeningHeartbeatTimer)
+    listeningHeartbeatTimer = null
+  }
+}
+
+async function sendListeningHeartbeat() {
+  const id = driverId.value
+  if (!id || !authed.value || !hasListeningIntent() || listeningHeartbeatInFlight) return
+  listeningHeartbeatInFlight = true
+  const body = {}
+  try {
+    try {
+      const { lat, lng } = await getCurrentLatLng()
+      body.lat = lat
+      body.lng = lng
+    } catch {
+      // 定位失败时仍续 Presence，避免短暂定位问题导致司机被误清理。
+    }
+    await postJson(`/driver/api/v1/drivers/${id}/heartbeat`, body)
+  } catch (e) {
+    maybeDropToLogin(e)
+  } finally {
+    listeningHeartbeatInFlight = false
+  }
+}
+
+function startListeningHeartbeat() {
+  stopListeningHeartbeat()
+  if (!hasListeningIntent()) return
+  void sendListeningHeartbeat()
+  listeningHeartbeatTimer = setInterval(() => {
+    void sendListeningHeartbeat()
+  }, LISTENING_HEARTBEAT_MS)
 }
 
 /** 与 order-service / driver-api 业务码 409 对齐（如服务中单再派、并发冲突） */
@@ -517,6 +557,7 @@ async function reseedListeningGeoQuiet(force = false) {
     await postJson(`/driver/api/v1/drivers/${id}/online`, body)
     monitorStatus.value = 1
     setListeningIntent(true)
+    startListeningHeartbeat()
     await loadAssigned(true)
   } catch (e) {
     maybeDropToLogin(e)
@@ -555,6 +596,7 @@ watch(
       connectDriverWs()
     } else {
       monitorStatus.value = null
+      stopListeningHeartbeat()
       disconnectWs()
     }
   },
@@ -695,6 +737,8 @@ async function setOnline(online) {
     await postJson(`/driver/api/v1/drivers/${id}/online`, body)
     monitorStatus.value = online ? 1 : 0
     setListeningIntent(online)
+    if (online) startListeningHeartbeat()
+    else stopListeningHeartbeat()
     if (online) {
       await loadAssigned(true)
     }
@@ -853,6 +897,7 @@ async function connectDriverWs(options = {}) {
       // 后台页定时器可能被浏览器节流，服务端会因心跳超时将司机下线。
       // 若前端仍处于听单意图，重连成功后立即恢复 Presence 并重新写入 GEO。
       if (hasListeningIntent()) {
+        startListeningHeartbeat()
         void reseedListeningGeoQuiet(true)
       }
     }
@@ -928,12 +973,14 @@ onBeforeUnmount(() => {
     clearInterval(countdownTimer)
     countdownTimer = null
   }
+  stopListeningHeartbeat()
   disconnectWs()
 })
 
 function onDriverVisibilityChange() {
   if (document.visibilityState === 'visible') {
     reviveDriverWs('visible')
+    void sendListeningHeartbeat()
   }
 }
 
@@ -960,6 +1007,7 @@ async function logoutAll() {
   }
   disconnectWs()
   setListeningIntent(false)
+  stopListeningHeartbeat()
   trip.clearActiveTrip()
   assigned.value = []
   assignedError.value = ''

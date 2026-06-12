@@ -102,6 +102,7 @@ npm run build
 
 - 短信或密码登录/注册。
 - 通过 `/driver/api/v1/drivers/{driverId}/online` 上线/下线听单。
+- 听单期间约每 15 秒调用 `/driver/api/v1/drivers/{driverId}/heartbeat`，定位成功时更新 GEO，定位失败时仍续 Presence。
 - 通过 `/driver/api/v1/orders/assigned` 拉取指派单列表。
 - 接单、拒单、到达前取消、到达、开始行程、完成行程。
 - 司机 WS token 与 WS 指派推送，并有 HTTP 降级。
@@ -119,6 +120,7 @@ npm run build
   - `POST /driver/api/v1/auth/logout`
 - 听单与订单：
   - `POST /driver/api/v1/drivers/{driverId}/online`
+  - `POST /driver/api/v1/drivers/{driverId}/heartbeat`
   - `GET /driver/api/v1/orders/assigned`
   - `POST /driver/api/v1/orders/{orderNo}/accept`
   - `POST /driver/api/v1/orders/{orderNo}/reject`
