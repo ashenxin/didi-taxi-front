@@ -56,8 +56,13 @@ export function useAuth() {
     smsSending.value = true
     const startedAt = Date.now()
     try {
-      await postJson('/driver/api/v1/auth/sms/send', { phone: phone.value })
-      smsHint.value = '验证码已发送（本地 mock 会在后端日志打印 code）'
+      const data = await postJson('/driver/api/v1/auth/sms/send', { phone: phone.value })
+      if (data?.mockCode) {
+        smsCode.value = data.mockCode
+        smsHint.value = '验证码已发送，已为本地 mock 自动填入'
+      } else {
+        smsHint.value = '验证码已发送'
+      }
     } catch (e) {
       smsHint.value = e?.message || String(e)
       maybeDropToLogin(e)
@@ -199,4 +204,3 @@ export function useAuth() {
     maybeDropToLogin,
   }
 }
-

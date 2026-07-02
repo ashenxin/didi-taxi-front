@@ -2164,6 +2164,342 @@ body:has(.page--passenger) {
   font-size: 14px;
 }
 
+.profile-page {
+  height: calc(100% - 50px - env(safe-area-inset-bottom));
+  min-height: 0;
+  overflow-y: auto;
+  padding: max(18px, env(safe-area-inset-top)) 14px calc(78px + env(safe-area-inset-bottom));
+  box-sizing: border-box;
+  background:
+    radial-gradient(circle at 10% 4%, rgba(4, 167, 223, 0.2) 0 88px, transparent 89px),
+    radial-gradient(circle at 92% 0%, rgba(20, 184, 154, 0.18) 0 92px, transparent 93px),
+    linear-gradient(180deg, #f4fbff 0%, #edf3f8 48%, #eef1f5 100%);
+  scrollbar-width: none;
+}
+
+.profile-page::-webkit-scrollbar {
+  display: none;
+}
+
+.profile-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+  padding: 20px 18px;
+  border-radius: 22px;
+  color: #ffffff;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.18), transparent 50%),
+    linear-gradient(135deg, #0bb99d 0%, #04a7df 100%);
+  box-shadow: 0 18px 36px rgba(4, 167, 223, 0.22);
+}
+
+.profile-hero__eyebrow,
+.profile-hero p {
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.profile-hero h1 {
+  margin: 5px 0 6px;
+  font-size: 27px;
+  line-height: 1.08;
+}
+
+.profile-hero p {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.profile-hero__avatar {
+  width: 58px;
+  height: 58px;
+  flex-shrink: 0;
+  border: 4px solid rgba(255, 255, 255, 0.6);
+  border-radius: 22px;
+  color: #05a7b9;
+  background: #ffffff;
+  font-size: 22px;
+  font-weight: 900;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.14);
+}
+
+.profile-card {
+  padding: 14px;
+  border: 1px solid rgba(17, 24, 39, 0.07);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.07);
+}
+
+.profile-card + .profile-card {
+  margin-top: 12px;
+}
+
+.profile-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.profile-section-head div {
+  display: grid;
+  gap: 3px;
+}
+
+.profile-section-head span {
+  color: #111827;
+  font-size: 20px;
+  font-weight: 900;
+}
+
+.profile-section-head strong {
+  color: #667085;
+  font-size: 12px;
+}
+
+.profile-section-head button,
+.my-order-pager button,
+.profile-service-card button {
+  font-family: inherit;
+}
+
+.profile-section-head button {
+  border: 0;
+  border-radius: 999px;
+  padding: 8px 13px;
+  color: #057fa8;
+  background: #e8fbff;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.profile-section-head button:disabled {
+  opacity: 0.65;
+}
+
+.my-order-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 7px;
+  margin-top: 14px;
+  padding: 4px;
+  border-radius: 999px;
+  background: #eef3f7;
+}
+
+.my-order-tabs__item {
+  min-width: 0;
+  height: 34px;
+  border: 0;
+  border-radius: 999px;
+  color: #6b7280;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.my-order-tabs__item--active {
+  color: #071a24;
+  background: #ffffff;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+}
+
+.my-order-loading {
+  display: grid;
+  place-items: center;
+  min-height: 178px;
+}
+
+.my-order-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.my-order-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, #ffffff, #f8fbff);
+  box-shadow:
+    inset 0 0 0 1px rgba(17, 24, 39, 0.06),
+    0 10px 22px rgba(15, 23, 42, 0.05);
+}
+
+.my-order-card__top,
+.my-order-card__meta,
+.my-order-actions,
+.my-order-pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.my-order-card__top {
+  justify-content: space-between;
+}
+
+.my-order-card__top div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.my-order-card__top span {
+  color: #8a94a3;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.my-order-card__top strong {
+  color: #111827;
+  font-size: 17px;
+  line-height: 1.2;
+}
+
+.my-order-card__top em {
+  flex-shrink: 0;
+  color: #101820;
+  font-size: 18px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.my-order-route {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  border-radius: 14px;
+  background: #f2f6fa;
+}
+
+.my-order-route div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.my-order-route span {
+  min-width: 0;
+  color: #344054;
+  font-size: 13px;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.my-order-route__dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 999px;
+}
+
+.my-order-route__dot--start {
+  background: #14b89a;
+}
+
+.my-order-route__dot--dest {
+  background: #ff4d4f;
+}
+
+.my-order-card__meta {
+  justify-content: space-between;
+  min-width: 0;
+  color: #8a94a3;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.my-order-card__meta .order-no-mono {
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.my-order-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.my-order-actions button {
+  min-width: 76px;
+  height: 32px;
+  border: 1px solid #dce4ec;
+  border-radius: 999px;
+  color: #667085;
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.my-order-actions button:disabled {
+  color: #98a2b3;
+  background: #f5f7fa;
+}
+
+.my-order-pager {
+  justify-content: space-between;
+  padding: 4px 2px 0;
+  color: #667085;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.my-order-pager button {
+  min-width: 70px;
+  height: 32px;
+  border: 0;
+  border-radius: 999px;
+  color: #057fa8;
+  background: #e8fbff;
+  font-weight: 850;
+}
+
+.my-order-pager button:disabled {
+  color: #a0a9b4;
+  background: #eef2f6;
+}
+
+.profile-service-card {
+  display: grid;
+  gap: 12px;
+}
+
+.profile-service-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 52px;
+  padding: 0 4px;
+  border: 0;
+  color: #111827;
+  background: transparent;
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.profile-service-entry em {
+  color: #8a94a3;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 750;
+}
+
 @media (max-height: 850px) {
   .ride-sheet__tabs {
     height: 62px;

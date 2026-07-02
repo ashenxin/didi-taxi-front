@@ -73,10 +73,27 @@ const wsConnected = ref(false)
 const passengerHomeTab = ref('home')
 const rideSheetLift = ref(0)
 const rideSheetMaxLift = ref(0)
+const myOrderType = ref('ALL')
+const myOrderPageNo = ref(1)
+const myOrderLoading = ref(false)
+const myOrderError = ref('')
+const myOrderPage = ref({
+  list: [],
+  total: 0,
+  pageNo: 1,
+  pageSize: 10,
+  type: 'ALL',
+})
 
 const RIDE_SHEET_BASE_HEIGHT = 300
 const RIDE_SHEET_TOP_GAP = 18
 const RIDE_SHEET_NAV_HEIGHT = 50
+const MY_ORDER_PAGE_SIZE = 10
+const MY_ORDER_TYPES = [
+  { code: 'ALL', label: '全部' },
+  { code: 'TO_DEPART', label: '待出发' },
+  { code: 'REFUND_CANCEL', label: '退款与取消' },
+]
 let rideSheetDragStartY = 0
 let rideSheetDragStartLift = 0
 let rideSheetDragging = false
@@ -114,6 +131,14 @@ const {
 watch(authed, (v) => {
   if (v) {
     passengerHomeTab.value = 'home'
+  } else {
+    resetMyOrders()
+  }
+})
+
+watch(passengerHomeTab, (tab) => {
+  if (tab === 'profile' && authed.value) {
+    loadMyOrders()
   }
 })
 
@@ -239,6 +264,11 @@ const fareText = computed(() => {
   const n = Number(amount)
   return Number.isNaN(n) ? String(amount) : `¥${n.toFixed(2)}`
 })
+const myOrders = computed(() => (Array.isArray(myOrderPage.value?.list) ? myOrderPage.value.list : []))
+const myOrderTotal = computed(() => Number(myOrderPage.value?.total || 0))
+const myOrderTotalPages = computed(() => Math.max(1, Math.ceil(myOrderTotal.value / MY_ORDER_PAGE_SIZE)))
+const myOrderHasPrev = computed(() => myOrderPageNo.value > 1)
+const myOrderHasNext = computed(() => myOrderPageNo.value < myOrderTotalPages.value)
 const trackingSteps = computed(() => {
   const c = trackingStatusCode.value
   const done = (code) => c != null && c >= code && c !== 6
@@ -605,6 +635,96 @@ async function cancelOrder() {
 
 function showFeatureTodo(name) {
   showToast({ message: `${name}：待开发`, duration: 1600 })
+}
+
+function resetMyOrders() {
+  myOrderPageNo.value = 1
+  myOrderType.value = 'ALL'
+  myOrderError.value = ''
+  myOrderPage.value = {
+    list: [],
+    total: 0,
+    pageNo: 1,
+    pageSize: MY_ORDER_PAGE_SIZE,
+    type: 'ALL',
+  }
+}
+
+async function loadMyOrders({ resetPage = false } = {}) {
+  if (!authed.value) return
+  if (resetPage) myOrderPageNo.value = 1
+  myOrderLoading.value = true
+  myOrderError.value = ''
+  try {
+    const params = new URLSearchParams({
+      type: myOrderType.value,
+      pageNo: String(myOrderPageNo.value),
+      pageSize: String(MY_ORDER_PAGE_SIZE),
+    })
+    const data = await getJson(`/app/api/v1/orders?${params.toString()}`)
+    myOrderPage.value = {
+      list: Array.isArray(data?.list) ? data.list : [],
+      total: Number(data?.total || 0),
+      pageNo: Number(data?.pageNo || myOrderPageNo.value),
+      pageSize: Number(data?.pageSize || MY_ORDER_PAGE_SIZE),
+      type: data?.type || myOrderType.value,
+    }
+    myOrderPageNo.value = myOrderPage.value.pageNo
+  } catch (e) {
+    maybeDropToLogin(e)
+    myOrderError.value = e?.message || String(e)
+  } finally {
+    myOrderLoading.value = false
+  }
+}
+
+function switchMyOrderType(type) {
+  if (!type || myOrderType.value === type) return
+  myOrderType.value = type
+  loadMyOrders({ resetPage: true })
+}
+
+function changeMyOrderPage(step) {
+  const next = myOrderPageNo.value + step
+  if (next < 1 || next > myOrderTotalPages.value) return
+  myOrderPageNo.value = next
+  loadMyOrders()
+}
+
+function orderRouteText(order) {
+  const origin = order?.originAddress || order?.origin?.address || order?.origin?.name || '上车点'
+  const dest = order?.destAddress || order?.dest?.address || order?.dest?.name || '目的地'
+  return { origin, dest }
+}
+
+function orderAmountText(order) {
+  const amount = order?.finalAmount ?? order?.estimatedAmount ?? order?.estimateAmount
+  if (amount == null || amount === '') return '金额待同步'
+  const n = Number(amount)
+  return Number.isNaN(n) ? String(amount) : `¥${n.toFixed(2)}`
+}
+
+function orderTimeText(order) {
+  const raw =
+    order?.timestamps?.createdAt ||
+    order?.createdAt ||
+    order?.createTime ||
+    order?.createdTime
+  if (!raw) return '时间待同步'
+  const d = new Date(raw)
+  if (Number.isNaN(d.getTime())) return String(raw)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+function orderActions(order) {
+  const actions = Array.isArray(order?.actions) ? order.actions : []
+  if (actions.length > 0) return actions
+  return [
+    { code: 'APPLY_INVOICE', label: '申请开票', disabled: true },
+    { code: 'RETURN_TRIP', label: '呼叫返程', disabled: true },
+    { code: 'RATE', label: '评价', disabled: true },
+  ]
 }
 
 function clampRideSheetLift(v) {
@@ -1036,16 +1156,131 @@ function onRideSheetPointerEnd(ev) {
           </section>
         </section>
 
+        <section v-else-if="passengerHomeTab === 'profile'" class="profile-page">
+          <header class="profile-hero">
+            <div>
+              <span class="profile-hero__eyebrow">个人中心</span>
+              <h1>我的出行</h1>
+              <p>查看行程记录、订单状态和后续服务入口</p>
+            </div>
+            <button class="profile-hero__avatar" type="button" @click="showFeatureTodo('个人资料')">我</button>
+          </header>
+
+          <section class="profile-card profile-orders">
+            <div class="profile-section-head">
+              <div>
+                <span>我的订单</span>
+                <strong>{{ myOrderTotal }} 单</strong>
+              </div>
+              <button type="button" :disabled="myOrderLoading" @click="loadMyOrders()">
+                {{ myOrderLoading ? '刷新中' : '刷新' }}
+              </button>
+            </div>
+
+            <div class="my-order-tabs" role="tablist" aria-label="订单类型">
+              <button
+                v-for="type in MY_ORDER_TYPES"
+                :key="type.code"
+                type="button"
+                role="tab"
+                :aria-selected="myOrderType === type.code"
+                :class="{ 'my-order-tabs__item--active': myOrderType === type.code }"
+                class="my-order-tabs__item"
+                @click="switchMyOrderType(type.code)"
+              >
+                {{ type.label }}
+              </button>
+            </div>
+
+            <div v-if="myOrderLoading && myOrders.length === 0" class="my-order-loading">
+              <van-loading size="22px" color="#04a7df">订单加载中</van-loading>
+            </div>
+            <van-notice-bar
+              v-else-if="myOrderError"
+              color="#ee0a24"
+              background="#fff1f0"
+              left-icon="warning-o"
+              :text="myOrderError"
+              wrapable
+              :scrollable="false"
+            />
+            <van-empty
+              v-else-if="myOrders.length === 0"
+              image="search"
+              description="暂无符合条件的订单"
+            />
+
+            <div v-else class="my-order-list">
+              <article v-for="order in myOrders" :key="order.orderNo" class="my-order-card">
+                <div class="my-order-card__top">
+                  <div>
+                    <span>{{ orderTimeText(order) }}</span>
+                    <strong>{{ formatOrderStatus(order.status) }}</strong>
+                  </div>
+                  <em>{{ orderAmountText(order) }}</em>
+                </div>
+
+                <div class="my-order-route">
+                  <div>
+                    <i class="my-order-route__dot my-order-route__dot--start" />
+                    <span>{{ orderRouteText(order).origin }}</span>
+                  </div>
+                  <div>
+                    <i class="my-order-route__dot my-order-route__dot--dest" />
+                    <span>{{ orderRouteText(order).dest }}</span>
+                  </div>
+                </div>
+
+                <div class="my-order-card__meta">
+                  <span class="order-no-mono">{{ order.orderNo || '订单号待同步' }}</span>
+                  <span v-if="order.driver?.driverName || order.driver?.name">
+                    {{ order.driver.driverName || order.driver.name }}
+                  </span>
+                </div>
+
+                <div class="my-order-actions">
+                  <button
+                    v-for="action in orderActions(order)"
+                    :key="action.code"
+                    type="button"
+                    :disabled="action.disabled !== false"
+                    @click="showFeatureTodo(action.label)"
+                  >
+                    {{ action.label }}
+                  </button>
+                </div>
+              </article>
+
+              <div class="my-order-pager">
+                <button type="button" :disabled="!myOrderHasPrev || myOrderLoading" @click="changeMyOrderPage(-1)">
+                  上一页
+                </button>
+                <span>第 {{ myOrderPageNo }} / {{ myOrderTotalPages }} 页</span>
+                <button type="button" :disabled="!myOrderHasNext || myOrderLoading" @click="changeMyOrderPage(1)">
+                  下一页
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section class="profile-card profile-service-card">
+            <button class="profile-service-entry" type="button" @click="showFeatureTodo('客服中心')">
+              <span>客服中心</span>
+              <em>订单问题、发票咨询 ›</em>
+            </button>
+            <van-button type="primary" plain round block @click="logoutAll">
+              退出登录
+            </van-button>
+          </section>
+        </section>
+
         <section v-else class="passenger-tab-placeholder">
           <div class="placeholder-card">
             <div class="placeholder-card__icon">
-              {{ passengerHomeTab === 'coupon' ? '券' : passengerHomeTab === 'benefits' ? '福' : '我' }}
+              {{ passengerHomeTab === 'coupon' ? '券' : '福' }}
             </div>
-            <h2>{{ passengerHomeTab === 'coupon' ? '券包' : passengerHomeTab === 'benefits' ? '福利' : '个人中心' }}</h2>
-            <p>{{ passengerHomeTab === 'profile' ? '个人资料与设置暂未开放' : '更多权益正在准备中' }}</p>
-            <van-button v-if="passengerHomeTab === 'profile'" type="primary" plain round @click="logoutAll">
-              退出登录
-            </van-button>
+            <h2>{{ passengerHomeTab === 'coupon' ? '券包' : '福利' }}</h2>
+            <p>更多权益正在准备中</p>
           </div>
         </section>
       </main>
