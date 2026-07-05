@@ -84,6 +84,27 @@ const myOrderPage = ref({
   pageSize: 10,
   type: 'ALL',
 })
+/** 个人中心子页面：main 只展示入口，orders 与 settings 点击后再下钻。 */
+const profileView = ref('main')
+const settingsProfile = ref(null)
+const settingsLoading = ref(false)
+const settingsError = ref('')
+/** 更换手机号只输入新手机号验证码；当前手机号由登录态 customerId 在服务端校验。 */
+const phoneChangeForm = reactive({
+  newPhone: '',
+  code: '',
+  sending: false,
+  submitting: false,
+  hint: '',
+})
+/** 注销账号需要当前手机号验证码和显式确认；提交成功后本地立即退出登录。 */
+const accountCancelForm = reactive({
+  code: '',
+  confirm: false,
+  sending: false,
+  submitting: false,
+  hint: '',
+})
 
 const RIDE_SHEET_BASE_HEIGHT = 300
 const RIDE_SHEET_TOP_GAP = 18
@@ -124,6 +145,7 @@ const {
   loginSms,
   loginPassword,
   logout,
+  clearLocalSession,
   maybeDropToLogin,
   switchLoginMode,
 } = useAuth()
@@ -138,7 +160,11 @@ watch(authed, (v) => {
 
 watch(passengerHomeTab, (tab) => {
   if (tab === 'profile' && authed.value) {
-    loadMyOrders()
+    if (profileView.value === 'orders') {
+      loadMyOrders()
+    } else if (['settings', 'phone-change', 'account-cancel'].includes(profileView.value)) {
+      loadSettingsProfile()
+    }
   }
 })
 
@@ -637,10 +663,174 @@ function showFeatureTodo(name) {
   showToast({ message: `${name}：待开发`, duration: 1600 })
 }
 
+function resetSettingsForms() {
+  settingsError.value = ''
+  phoneChangeForm.newPhone = ''
+  phoneChangeForm.code = ''
+  phoneChangeForm.sending = false
+  phoneChangeForm.submitting = false
+  phoneChangeForm.hint = ''
+  accountCancelForm.code = ''
+  accountCancelForm.confirm = false
+  accountCancelForm.sending = false
+  accountCancelForm.submitting = false
+  accountCancelForm.hint = ''
+}
+
+/** 设置页每次进入都重新拉取账号摘要，避免更换手机号后展示旧脱敏号码。 */
+async function loadSettingsProfile() {
+  if (!authed.value) return
+  settingsLoading.value = true
+  settingsError.value = ''
+  try {
+    settingsProfile.value = await getJson('/app/api/v1/settings/profile')
+  } catch (e) {
+    maybeDropToLogin(e)
+    settingsError.value = e?.message || String(e)
+  } finally {
+    settingsLoading.value = false
+  }
+}
+
+function openSettingsHome() {
+  profileView.value = 'settings'
+  resetSettingsForms()
+  loadSettingsProfile()
+}
+
+function openMyOrders() {
+  profileView.value = 'orders'
+  loadMyOrders({ resetPage: true })
+}
+
+function openPhoneChange() {
+  profileView.value = 'phone-change'
+  phoneChangeForm.hint = ''
+  phoneChangeForm.code = ''
+  loadSettingsProfile()
+}
+
+function openAccountCancel() {
+  profileView.value = 'account-cancel'
+  accountCancelForm.hint = ''
+  accountCancelForm.code = ''
+  accountCancelForm.confirm = false
+  loadSettingsProfile()
+}
+
+function backToProfileMain() {
+  profileView.value = 'main'
+  resetSettingsForms()
+}
+
+function backToSettingsHome() {
+  profileView.value = 'settings'
+  resetSettingsForms()
+  loadSettingsProfile()
+}
+
+async function sendPhoneChangeSms() {
+  phoneChangeForm.hint = ''
+  phoneChangeForm.sending = true
+  try {
+    const data = await postJson('/app/api/v1/settings/phone-change/sms/send', {
+      newPhone: phoneChangeForm.newPhone,
+    })
+    if (data?.mockCode) {
+      phoneChangeForm.code = data.mockCode
+      phoneChangeForm.hint = '验证码已发送，已为本地 mock 自动填入'
+    } else {
+      phoneChangeForm.hint = '验证码已发送'
+    }
+  } catch (e) {
+    maybeDropToLogin(e)
+    phoneChangeForm.hint = e?.message || String(e)
+  } finally {
+    phoneChangeForm.sending = false
+  }
+}
+
+async function confirmPhoneChange() {
+  phoneChangeForm.hint = ''
+  phoneChangeForm.submitting = true
+  try {
+    await postJson('/app/api/v1/settings/phone-change/confirm', {
+      newPhone: phoneChangeForm.newPhone,
+      code: phoneChangeForm.code,
+    })
+    showToast({ type: 'success', message: '手机号已更换，请重新登录' })
+    // 服务端已提升 tokenVersion；本地同步清理，避免继续用旧手机号身份操作。
+    stopOrderPoll()
+    clearLocalSession()
+  } catch (e) {
+    maybeDropToLogin(e)
+    phoneChangeForm.hint = e?.message || String(e)
+  } finally {
+    phoneChangeForm.submitting = false
+  }
+}
+
+async function sendAccountCancelSms() {
+  accountCancelForm.hint = ''
+  accountCancelForm.sending = true
+  try {
+    const data = await postJson('/app/api/v1/settings/account-cancel/sms/send', {})
+    if (data?.mockCode) {
+      accountCancelForm.code = data.mockCode
+      accountCancelForm.hint = `验证码已发送至 ${data.maskedPhone || '当前手机号'}，已为本地 mock 自动填入`
+    } else {
+      accountCancelForm.hint = `验证码已发送至 ${data?.maskedPhone || '当前手机号'}`
+    }
+  } catch (e) {
+    maybeDropToLogin(e)
+    accountCancelForm.hint = e?.message || String(e)
+  } finally {
+    accountCancelForm.sending = false
+  }
+}
+
+async function confirmAccountCancel() {
+  if (!accountCancelForm.confirm) {
+    accountCancelForm.hint = '请先确认注销风险'
+    return
+  }
+  try {
+    await showConfirmDialog({
+      title: '确认注销账号',
+      message: '注销后当前账号无法继续登录，用户端不再展示原账号订单记录。',
+      confirmButtonText: '确认注销',
+      cancelButtonText: '再想想',
+      confirmButtonColor: '#ee0a24',
+    })
+  } catch {
+    return
+  }
+  accountCancelForm.hint = ''
+  accountCancelForm.submitting = true
+  try {
+    await postJson('/app/api/v1/settings/account-cancel/confirm', {
+      code: accountCancelForm.code,
+      confirm: accountCancelForm.confirm,
+    })
+    showToast({ type: 'success', message: '账号已注销' })
+    // 注销后历史订单仍在后台保留，但用户端当前会话必须马上结束。
+    stopOrderPoll()
+    clearLocalSession()
+  } catch (e) {
+    maybeDropToLogin(e)
+    accountCancelForm.hint = e?.message || String(e)
+  } finally {
+    accountCancelForm.submitting = false
+  }
+}
+
 function resetMyOrders() {
   myOrderPageNo.value = 1
   myOrderType.value = 'ALL'
   myOrderError.value = ''
+  profileView.value = 'main'
+  settingsProfile.value = null
+  resetSettingsForms()
   myOrderPage.value = {
     list: [],
     total: 0,
@@ -1166,112 +1356,237 @@ function onRideSheetPointerEnd(ev) {
             <button class="profile-hero__avatar" type="button" @click="showFeatureTodo('个人资料')">我</button>
           </header>
 
-          <section class="profile-card profile-orders">
-            <div class="profile-section-head">
-              <div>
+          <template v-if="profileView === 'main'">
+            <section class="profile-card profile-service-card">
+              <button class="profile-service-entry" type="button" @click="openMyOrders">
                 <span>我的订单</span>
-                <strong>{{ myOrderTotal }} 单</strong>
+                <em>查看行程记录、订单状态 ›</em>
+              </button>
+              <button class="profile-service-entry" type="button" @click="openSettingsHome">
+                <span>设置</span>
+                <em>更换手机号、注销账号 ›</em>
+              </button>
+              <button class="profile-service-entry" type="button" @click="showFeatureTodo('客服中心')">
+                <span>客服中心</span>
+                <em>订单问题、发票咨询 ›</em>
+              </button>
+              <van-button type="primary" plain round block @click="logoutAll">
+                退出登录
+              </van-button>
+            </section>
+          </template>
+
+          <template v-else-if="profileView === 'orders'">
+            <section class="profile-card profile-orders">
+              <div class="settings-head">
+                <button type="button" @click="backToProfileMain">‹</button>
+                <strong>我的订单</strong>
               </div>
-              <button type="button" :disabled="myOrderLoading" @click="loadMyOrders()">
-                {{ myOrderLoading ? '刷新中' : '刷新' }}
-              </button>
-            </div>
-
-            <div class="my-order-tabs" role="tablist" aria-label="订单类型">
-              <button
-                v-for="type in MY_ORDER_TYPES"
-                :key="type.code"
-                type="button"
-                role="tab"
-                :aria-selected="myOrderType === type.code"
-                :class="{ 'my-order-tabs__item--active': myOrderType === type.code }"
-                class="my-order-tabs__item"
-                @click="switchMyOrderType(type.code)"
-              >
-                {{ type.label }}
-              </button>
-            </div>
-
-            <div v-if="myOrderLoading && myOrders.length === 0" class="my-order-loading">
-              <van-loading size="22px" color="#04a7df">订单加载中</van-loading>
-            </div>
-            <van-notice-bar
-              v-else-if="myOrderError"
-              color="#ee0a24"
-              background="#fff1f0"
-              left-icon="warning-o"
-              :text="myOrderError"
-              wrapable
-              :scrollable="false"
-            />
-            <van-empty
-              v-else-if="myOrders.length === 0"
-              image="search"
-              description="暂无符合条件的订单"
-            />
-
-            <div v-else class="my-order-list">
-              <article v-for="order in myOrders" :key="order.orderNo" class="my-order-card">
-                <div class="my-order-card__top">
-                  <div>
-                    <span>{{ orderTimeText(order) }}</span>
-                    <strong>{{ formatOrderStatus(order.status) }}</strong>
-                  </div>
-                  <em>{{ orderAmountText(order) }}</em>
+              <div class="profile-section-head">
+                <div>
+                  <span>全部行程</span>
+                  <strong>{{ myOrderTotal }} 单</strong>
                 </div>
+                <button type="button" :disabled="myOrderLoading" @click="loadMyOrders()">
+                  {{ myOrderLoading ? '刷新中' : '刷新' }}
+                </button>
+              </div>
 
-                <div class="my-order-route">
-                  <div>
-                    <i class="my-order-route__dot my-order-route__dot--start" />
-                    <span>{{ orderRouteText(order).origin }}</span>
+              <div class="my-order-tabs" role="tablist" aria-label="订单类型">
+                <button
+                  v-for="type in MY_ORDER_TYPES"
+                  :key="type.code"
+                  type="button"
+                  role="tab"
+                  :aria-selected="myOrderType === type.code"
+                  :class="{ 'my-order-tabs__item--active': myOrderType === type.code }"
+                  class="my-order-tabs__item"
+                  @click="switchMyOrderType(type.code)"
+                >
+                  {{ type.label }}
+                </button>
+              </div>
+
+              <div v-if="myOrderLoading && myOrders.length === 0" class="my-order-loading">
+                <van-loading size="22px" color="#04a7df">订单加载中</van-loading>
+              </div>
+              <van-notice-bar
+                v-else-if="myOrderError"
+                color="#ee0a24"
+                background="#fff1f0"
+                left-icon="warning-o"
+                :text="myOrderError"
+                wrapable
+                :scrollable="false"
+              />
+              <van-empty
+                v-else-if="myOrders.length === 0"
+                image="search"
+                description="暂无符合条件的订单"
+              />
+
+              <div v-else class="my-order-list">
+                <article v-for="order in myOrders" :key="order.orderNo" class="my-order-card">
+                  <div class="my-order-card__top">
+                    <div>
+                      <span>{{ orderTimeText(order) }}</span>
+                      <strong>{{ formatOrderStatus(order.status) }}</strong>
+                    </div>
+                    <em>{{ orderAmountText(order) }}</em>
                   </div>
-                  <div>
-                    <i class="my-order-route__dot my-order-route__dot--dest" />
-                    <span>{{ orderRouteText(order).dest }}</span>
+
+                  <div class="my-order-route">
+                    <div>
+                      <i class="my-order-route__dot my-order-route__dot--start" />
+                      <span>{{ orderRouteText(order).origin }}</span>
+                    </div>
+                    <div>
+                      <i class="my-order-route__dot my-order-route__dot--dest" />
+                      <span>{{ orderRouteText(order).dest }}</span>
+                    </div>
                   </div>
-                </div>
 
-                <div class="my-order-card__meta">
-                  <span class="order-no-mono">{{ order.orderNo || '订单号待同步' }}</span>
-                  <span v-if="order.driver?.driverName || order.driver?.name">
-                    {{ order.driver.driverName || order.driver.name }}
-                  </span>
-                </div>
+                  <div class="my-order-card__meta">
+                    <span class="order-no-mono">{{ order.orderNo || '订单号待同步' }}</span>
+                    <span v-if="order.driver?.driverName || order.driver?.name">
+                      {{ order.driver.driverName || order.driver.name }}
+                    </span>
+                  </div>
 
-                <div class="my-order-actions">
-                  <button
-                    v-for="action in orderActions(order)"
-                    :key="action.code"
-                    type="button"
-                    :disabled="action.disabled !== false"
-                    @click="showFeatureTodo(action.label)"
-                  >
-                    {{ action.label }}
+                  <div class="my-order-actions">
+                    <button
+                      v-for="action in orderActions(order)"
+                      :key="action.code"
+                      type="button"
+                      :disabled="action.disabled !== false"
+                      @click="showFeatureTodo(action.label)"
+                    >
+                      {{ action.label }}
+                    </button>
+                  </div>
+                </article>
+
+                <div class="my-order-pager">
+                  <button type="button" :disabled="!myOrderHasPrev || myOrderLoading" @click="changeMyOrderPage(-1)">
+                    上一页
+                  </button>
+                  <span>第 {{ myOrderPageNo }} / {{ myOrderTotalPages }} 页</span>
+                  <button type="button" :disabled="!myOrderHasNext || myOrderLoading" @click="changeMyOrderPage(1)">
+                    下一页
                   </button>
                 </div>
-              </article>
-
-              <div class="my-order-pager">
-                <button type="button" :disabled="!myOrderHasPrev || myOrderLoading" @click="changeMyOrderPage(-1)">
-                  上一页
-                </button>
-                <span>第 {{ myOrderPageNo }} / {{ myOrderTotalPages }} 页</span>
-                <button type="button" :disabled="!myOrderHasNext || myOrderLoading" @click="changeMyOrderPage(1)">
-                  下一页
-                </button>
               </div>
-            </div>
-          </section>
+            </section>
+          </template>
 
-          <section class="profile-card profile-service-card">
-            <button class="profile-service-entry" type="button" @click="showFeatureTodo('客服中心')">
-              <span>客服中心</span>
-              <em>订单问题、发票咨询 ›</em>
-            </button>
-            <van-button type="primary" plain round block @click="logoutAll">
-              退出登录
-            </van-button>
-          </section>
+          <template v-else-if="profileView === 'settings'">
+            <section class="profile-card settings-card">
+              <div class="settings-head">
+                <button type="button" @click="backToProfileMain">‹</button>
+                <strong>设置</strong>
+              </div>
+              <van-loading v-if="settingsLoading" size="22px" color="#04a7df">加载中</van-loading>
+              <van-notice-bar
+                v-else-if="settingsError"
+                color="#ee0a24"
+                background="#fff1f0"
+                left-icon="warning-o"
+                :text="settingsError"
+                wrapable
+                :scrollable="false"
+              />
+              <div v-else class="settings-summary">
+                <span>当前手机号</span>
+                <strong>{{ settingsProfile?.maskedPhone || '未同步' }}</strong>
+              </div>
+              <button class="settings-entry" type="button" @click="openPhoneChange">
+                <span>更换手机号</span>
+                <em>不会影响历史订单 ›</em>
+              </button>
+              <button class="settings-entry settings-entry--danger" type="button" @click="openAccountCancel">
+                <span>注销账号</span>
+                <em>需无进行中订单 ›</em>
+              </button>
+            </section>
+          </template>
+
+          <template v-else-if="profileView === 'phone-change'">
+            <section class="profile-card settings-card">
+              <div class="settings-head">
+                <button type="button" @click="backToSettingsHome">‹</button>
+                <strong>更换手机号</strong>
+              </div>
+              <div class="settings-summary">
+                <span>当前手机号</span>
+                <strong>{{ settingsProfile?.maskedPhone || '未同步' }}</strong>
+              </div>
+              <p class="settings-note">当前手机号由系统自动校验。更换成功后需使用新手机号重新登录，历史订单和账号资料会保留。</p>
+              <van-cell-group inset>
+                <van-field
+                  v-model="phoneChangeForm.newPhone"
+                  label="新手机号"
+                  placeholder="请输入新手机号"
+                  type="tel"
+                  maxlength="11"
+                  clearable
+                />
+                <van-field
+                  v-model="phoneChangeForm.code"
+                  label="验证码"
+                  placeholder="请输入验证码"
+                  maxlength="6"
+                  clearable
+                >
+                  <template #button>
+                    <van-button size="small" type="primary" :loading="phoneChangeForm.sending" @click="sendPhoneChangeSms">
+                      发送验证码
+                    </van-button>
+                  </template>
+                </van-field>
+              </van-cell-group>
+              <p v-if="phoneChangeForm.hint" class="settings-hint">{{ phoneChangeForm.hint }}</p>
+              <van-button type="primary" round block :loading="phoneChangeForm.submitting" @click="confirmPhoneChange">
+                确认更换
+              </van-button>
+            </section>
+          </template>
+
+          <template v-else-if="profileView === 'account-cancel'">
+            <section class="profile-card settings-card settings-card--danger">
+              <div class="settings-head">
+                <button type="button" @click="backToSettingsHome">‹</button>
+                <strong>注销账号</strong>
+              </div>
+              <div class="settings-risk">
+                <strong>注销前请确认</strong>
+                <p>账号注销后，用户端不再展示该账号的历史订单；后台会继续保留历史订单记录。</p>
+                <p>该手机号可重新注册为新账号，但不会继承原账号订单。</p>
+                <p>若当前存在进行中订单，请先完成或取消订单后再注销。</p>
+              </div>
+              <van-cell-group inset>
+                <van-field
+                  v-model="accountCancelForm.code"
+                  label="验证码"
+                  placeholder="发送至当前绑定手机号"
+                  maxlength="6"
+                  clearable
+                >
+                  <template #button>
+                    <van-button size="small" type="primary" :loading="accountCancelForm.sending" @click="sendAccountCancelSms">
+                      发送验证码
+                    </van-button>
+                  </template>
+                </van-field>
+                <van-checkbox v-model="accountCancelForm.confirm" shape="square" class="settings-confirm">
+                  我已了解注销影响并确认注销
+                </van-checkbox>
+              </van-cell-group>
+              <p v-if="accountCancelForm.hint" class="settings-hint">{{ accountCancelForm.hint }}</p>
+              <van-button type="danger" round block :loading="accountCancelForm.submitting" @click="confirmAccountCancel">
+                确认注销账号
+              </van-button>
+            </section>
+          </template>
         </section>
 
         <section v-else class="passenger-tab-placeholder">

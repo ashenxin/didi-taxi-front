@@ -2500,6 +2500,128 @@ body:has(.page--passenger) {
   font-weight: 750;
 }
 
+.settings-card {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-head {
+  display: grid;
+  grid-template-columns: 36px 1fr 36px;
+  align-items: center;
+  min-height: 36px;
+}
+
+.settings-head button {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 999px;
+  color: #057fa8;
+  background: #e8fbff;
+  font-size: 24px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.settings-head strong {
+  justify-self: center;
+  color: #111827;
+  font-size: 18px;
+  font-weight: 950;
+}
+
+.settings-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 52px;
+  padding: 0 12px;
+  border-radius: 14px;
+  background: #f2f6fa;
+}
+
+.settings-summary span,
+.settings-entry em,
+.settings-note,
+.settings-risk p,
+.settings-hint {
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.settings-summary strong {
+  color: #111827;
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.settings-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 56px;
+  padding: 0 12px;
+  border: 1px solid rgba(17, 24, 39, 0.06);
+  border-radius: 14px;
+  color: #111827;
+  background: #ffffff;
+  font-size: 15px;
+  font-weight: 900;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
+}
+
+.settings-entry em {
+  font-style: normal;
+  font-weight: 750;
+}
+
+.settings-entry--danger span {
+  color: #ee0a24;
+}
+
+.settings-note {
+  margin: 0;
+  padding: 0 3px;
+}
+
+.settings-hint {
+  margin: -2px 3px 0;
+  color: #057fa8;
+  font-weight: 800;
+}
+
+.settings-card--danger {
+  border-color: rgba(238, 10, 36, 0.14);
+}
+
+.settings-risk {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 14px;
+  background: #fff4f5;
+}
+
+.settings-risk strong {
+  color: #b42318;
+  font-size: 15px;
+  font-weight: 950;
+}
+
+.settings-risk p {
+  margin: 0;
+}
+
+.settings-confirm {
+  padding: 12px 16px;
+  font-size: 13px;
+  font-weight: 850;
+}
+
 @media (max-height: 850px) {
   .ride-sheet__tabs {
     height: 62px;

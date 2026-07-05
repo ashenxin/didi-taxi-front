@@ -167,6 +167,14 @@ export function useAuth() {
     return hint
   }
 
+  function clearLocalSession() {
+    // 更换手机号/注销账号成功后不再调用登出接口，直接清掉本机登录态。
+    clearToken()
+    authed.value = false
+    authError.value = null
+    resetInputs()
+  }
+
   /** 验证码 ↔ 密码登录切换（单次只展示一种方式） */
   function switchLoginMode(mode) {
     if (mode !== 'sms' && mode !== 'pwd') return
@@ -207,6 +215,7 @@ export function useAuth() {
     loginSms,
     loginPassword,
     logout,
+    clearLocalSession,
     maybeDropToLogin,
     switchLoginMode,
   }
