@@ -115,6 +115,23 @@ const MY_ORDER_TYPES = [
   { code: 'TO_DEPART', label: '待出发' },
   { code: 'REFUND_CANCEL', label: '退款与取消' },
 ]
+const WALLET_ENTRIES = [
+  { key: 'passwordless', title: '免密支付设置', desc: '开启后行程结束自动扣款', icon: '免' },
+  { key: 'bank-card', title: '银行卡', desc: '管理常用银行卡与支付卡', icon: '卡' },
+  { key: 'coupon', title: '优惠券', desc: '查看可用出行优惠', icon: '券' },
+  { key: 'loan', title: '借钱', desc: '额度与借款服务入口', icon: '借' },
+  { key: 'car-insurance', title: '车险', desc: '车主保障与保险服务', icon: '险' },
+]
+const AUTO_PAY_CHANNELS = [
+  { channel: 'ALIPAY', name: '支付宝', desc: '适合常用支付宝出行扣款' },
+  { channel: 'WECHAT', name: '微信', desc: '适合常用微信支付自动扣款' },
+]
+const walletSummary = ref(null)
+const walletAgreements = ref([])
+const walletCoupons = ref({ list: [], total: 0, pageNo: 1, pageSize: 20 })
+const walletLoading = ref(false)
+const walletError = ref('')
+const walletActionLoading = ref('')
 let rideSheetDragStartY = 0
 let rideSheetDragStartLift = 0
 let rideSheetDragging = false
@@ -164,6 +181,12 @@ watch(passengerHomeTab, (tab) => {
       loadMyOrders()
     } else if (['settings', 'phone-change', 'account-cancel'].includes(profileView.value)) {
       loadSettingsProfile()
+    } else if (profileView.value === 'wallet') {
+      loadWalletSummary()
+    } else if (profileView.value === 'wallet-autopay') {
+      loadWalletAutoPay()
+    } else if (profileView.value === 'wallet-coupons') {
+      loadWalletCoupons()
     }
   }
 })
@@ -703,6 +726,147 @@ function openMyOrders() {
   loadMyOrders({ resetPage: true })
 }
 
+function openWallet() {
+  profileView.value = 'wallet'
+  loadWalletSummary()
+}
+
+function openWalletEntry(entry) {
+  if (entry.key === 'passwordless') {
+    profileView.value = 'wallet-autopay'
+    loadWalletAutoPay()
+    return
+  }
+  if (entry.key === 'coupon') {
+    profileView.value = 'wallet-coupons'
+    loadWalletCoupons()
+    return
+  }
+  showFeatureTodo(entry.title)
+}
+
+function backToWalletHome() {
+  profileView.value = 'wallet'
+  loadWalletSummary()
+}
+
+function walletAgreement(channel) {
+  return walletAgreements.value.find((item) => item.channel === channel) || null
+}
+
+function walletStatusText(status) {
+  const map = {
+    ACTIVE: '已开通',
+    SIGNING: '签约中',
+    CLOSED: '已关闭',
+    FAILED: '签约失败',
+  }
+  return map[status] || status || '未开通'
+}
+
+function couponStatusText(status) {
+  const map = {
+    UNUSED: '未使用',
+    LOCKED: '已锁定',
+    USED: '已使用',
+    EXPIRED: '已过期',
+    INVALID: '已失效',
+  }
+  return map[status] || status || '-'
+}
+
+function formatMoney(v) {
+  const n = Number(v || 0)
+  return Number.isFinite(n) ? n.toFixed(2) : '0.00'
+}
+
+async function loadWalletSummary() {
+  if (!authed.value) return
+  walletLoading.value = true
+  walletError.value = ''
+  try {
+    walletSummary.value = await getJson('/app/api/v1/wallet/summary')
+  } catch (e) {
+    maybeDropToLogin(e)
+    walletError.value = e?.message || String(e)
+  } finally {
+    walletLoading.value = false
+  }
+}
+
+async function loadWalletAutoPay() {
+  if (!authed.value) return
+  walletLoading.value = true
+  walletError.value = ''
+  try {
+    walletAgreements.value = await getJson('/app/api/v1/wallet/auto-pay/agreements')
+  } catch (e) {
+    maybeDropToLogin(e)
+    walletError.value = e?.message || String(e)
+  } finally {
+    walletLoading.value = false
+  }
+}
+
+async function signAutoPay(channel) {
+  walletActionLoading.value = `sign-${channel}`
+  try {
+    await postJson('/app/api/v1/wallet/auto-pay/agreements/sign', {
+      channel,
+      signScene: 'PASSENGER_WALLET',
+    })
+    showToast({ type: 'success', message: '已开通免密支付' })
+    await loadWalletAutoPay()
+  } catch (e) {
+    maybeDropToLogin(e)
+    showToast({ type: 'fail', message: e?.message || String(e) })
+  } finally {
+    walletActionLoading.value = ''
+  }
+}
+
+async function setDefaultAutoPay(agreementId) {
+  walletActionLoading.value = `default-${agreementId}`
+  try {
+    await postJson(`/app/api/v1/wallet/auto-pay/agreements/${agreementId}/default`)
+    showToast({ type: 'success', message: '已设为默认' })
+    await loadWalletAutoPay()
+  } catch (e) {
+    maybeDropToLogin(e)
+    showToast({ type: 'fail', message: e?.message || String(e) })
+  } finally {
+    walletActionLoading.value = ''
+  }
+}
+
+async function closeAutoPay(agreementId) {
+  walletActionLoading.value = `close-${agreementId}`
+  try {
+    await postJson(`/app/api/v1/wallet/auto-pay/agreements/${agreementId}/close`)
+    showToast({ type: 'success', message: '已关闭' })
+    await loadWalletAutoPay()
+  } catch (e) {
+    maybeDropToLogin(e)
+    showToast({ type: 'fail', message: e?.message || String(e) })
+  } finally {
+    walletActionLoading.value = ''
+  }
+}
+
+async function loadWalletCoupons() {
+  if (!authed.value) return
+  walletLoading.value = true
+  walletError.value = ''
+  try {
+    walletCoupons.value = await getJson('/app/api/v1/wallet/coupons?pageNo=1&pageSize=20')
+  } catch (e) {
+    maybeDropToLogin(e)
+    walletError.value = e?.message || String(e)
+  } finally {
+    walletLoading.value = false
+  }
+}
+
 function openPhoneChange() {
   profileView.value = 'phone-change'
   phoneChangeForm.hint = ''
@@ -721,6 +885,7 @@ function openAccountCancel() {
 function backToProfileMain() {
   profileView.value = 'main'
   resetSettingsForms()
+  walletError.value = ''
 }
 
 function backToSettingsHome() {
@@ -1366,6 +1531,10 @@ function onRideSheetPointerEnd(ev) {
                 <span>设置</span>
                 <em>更换手机号、注销账号 ›</em>
               </button>
+              <button class="profile-service-entry" type="button" @click="openWallet">
+                <span>我的钱包</span>
+                <em>支付、卡券、金融服务 ›</em>
+              </button>
               <button class="profile-service-entry" type="button" @click="showFeatureTodo('客服中心')">
                 <span>客服中心</span>
                 <em>订单问题、发票咨询 ›</em>
@@ -1475,6 +1644,115 @@ function onRideSheetPointerEnd(ev) {
                     下一页
                   </button>
                 </div>
+              </div>
+            </section>
+          </template>
+
+          <template v-else-if="profileView === 'wallet'">
+            <section class="profile-card wallet-card">
+              <div class="settings-head">
+                <button type="button" @click="backToProfileMain">‹</button>
+                <strong>我的钱包</strong>
+              </div>
+              <p v-if="walletError" class="settings-hint">{{ walletError }}</p>
+              <div class="wallet-summary">
+                <div>
+                  <span>可用优惠</span>
+                  <strong>{{ walletSummary?.availableCouponCount ?? '-' }} 张</strong>
+                </div>
+                <div>
+                  <span>默认支付</span>
+                  <strong>{{ walletSummary?.defaultAutoPayAgreement?.channelName || '未设置' }}</strong>
+                </div>
+              </div>
+              <div class="wallet-entry-list" aria-label="我的钱包功能列表">
+                <button
+                  v-for="entry in WALLET_ENTRIES"
+                  :key="entry.key"
+                  class="wallet-entry"
+                  type="button"
+                  @click="openWalletEntry(entry)"
+                >
+                  <span class="wallet-entry__icon">{{ entry.icon }}</span>
+                  <span class="wallet-entry__body">
+                    <strong>{{ entry.title }}</strong>
+                    <em>{{ entry.desc }}</em>
+                  </span>
+                  <span class="wallet-entry__arrow">›</span>
+                </button>
+              </div>
+            </section>
+          </template>
+
+          <template v-else-if="profileView === 'wallet-autopay'">
+            <section class="profile-card wallet-card">
+              <div class="settings-head">
+                <button type="button" @click="backToWalletHome">‹</button>
+                <strong>免密支付设置</strong>
+              </div>
+              <p v-if="walletError" class="settings-hint">{{ walletError }}</p>
+              <div class="wallet-entry-list">
+                <article v-for="item in AUTO_PAY_CHANNELS" :key="item.channel" class="wallet-pay-row">
+                  <span class="wallet-entry__icon">{{ item.name.slice(0, 1) }}</span>
+                  <span class="wallet-entry__body">
+                    <strong>{{ item.name }}</strong>
+                    <em>{{ item.desc }}</em>
+                    <em>{{ walletStatusText(walletAgreement(item.channel)?.status) }}</em>
+                  </span>
+                  <span v-if="walletAgreement(item.channel)?.defaulted" class="wallet-badge">默认</span>
+                  <div class="wallet-row-actions">
+                    <button
+                      v-if="!walletAgreement(item.channel) || walletAgreement(item.channel)?.status === 'CLOSED'"
+                      type="button"
+                      :disabled="walletActionLoading === `sign-${item.channel}`"
+                      @click="signAutoPay(item.channel)"
+                    >
+                      开通
+                    </button>
+                    <button
+                      v-else-if="!walletAgreement(item.channel)?.defaulted"
+                      type="button"
+                      :disabled="walletActionLoading === `default-${walletAgreement(item.channel)?.agreementId}`"
+                      @click="setDefaultAutoPay(walletAgreement(item.channel).agreementId)"
+                    >
+                      设默认
+                    </button>
+                    <button
+                      v-if="walletAgreement(item.channel)?.status === 'ACTIVE'"
+                      type="button"
+                      :disabled="walletActionLoading === `close-${walletAgreement(item.channel)?.agreementId}`"
+                      @click="closeAutoPay(walletAgreement(item.channel).agreementId)"
+                    >
+                      关闭
+                    </button>
+                  </div>
+                </article>
+              </div>
+            </section>
+          </template>
+
+          <template v-else-if="profileView === 'wallet-coupons'">
+            <section class="profile-card wallet-card">
+              <div class="settings-head">
+                <button type="button" @click="backToWalletHome">‹</button>
+                <strong>优惠券</strong>
+              </div>
+              <p v-if="walletError" class="settings-hint">{{ walletError }}</p>
+              <div v-if="!walletCoupons.list?.length" class="settings-summary">
+                <span>{{ walletLoading ? '正在加载优惠券' : '暂无优惠券' }}</span>
+                <strong>{{ walletCoupons.total || 0 }} 张</strong>
+              </div>
+              <div v-else class="wallet-coupon-list">
+                <article v-for="coupon in walletCoupons.list" :key="coupon.couponId" class="wallet-coupon">
+                  <div>
+                    <strong>{{ coupon.couponName }}</strong>
+                    <span>满 {{ formatMoney(coupon.thresholdAmount) }} 可用</span>
+                  </div>
+                  <div>
+                    <strong>-{{ formatMoney(coupon.discountAmount) }}</strong>
+                    <span>{{ couponStatusText(coupon.status) }}</span>
+                  </div>
+                </article>
               </div>
             </section>
           </template>
