@@ -780,6 +780,17 @@ function formatMoney(v) {
   return Number.isFinite(n) ? n.toFixed(2) : '0.00'
 }
 
+function couponDiscountLabel(coupon) {
+  if (!coupon) return '-'
+  if (coupon.couponType === 'PERCENT_OFF') {
+    const rate = Number(coupon.discountRate)
+    const text = Number.isFinite(rate) ? `${(rate * 10).toFixed(1)}折` : '折扣券'
+    return coupon.maxDiscountAmount ? `${text} 封顶${formatMoney(coupon.maxDiscountAmount)}` : text
+  }
+  if (coupon.couponType === 'SPECIAL') return '活动券'
+  return `-${formatMoney(coupon.discountAmount)}`
+}
+
 async function loadWalletSummary() {
   if (!authed.value) return
   walletLoading.value = true
@@ -1749,7 +1760,7 @@ function onRideSheetPointerEnd(ev) {
                     <span>满 {{ formatMoney(coupon.thresholdAmount) }} 可用</span>
                   </div>
                   <div>
-                    <strong>-{{ formatMoney(coupon.discountAmount) }}</strong>
+                    <strong>{{ couponDiscountLabel(coupon) }}</strong>
                     <span>{{ couponStatusText(coupon.status) }}</span>
                   </div>
                 </article>
