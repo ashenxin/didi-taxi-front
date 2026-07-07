@@ -1658,7 +1658,7 @@ function onRideSheetPointerEnd(ev) {
               <div class="wallet-summary">
                 <div>
                   <span>可用优惠</span>
-                  <strong>{{ walletSummary?.availableCouponCount ?? '-' }} 张</strong>
+                  <strong>{{ walletSummary?.availableCouponCount ?? 0 }} 张</strong>
                 </div>
                 <div>
                   <span>默认支付</span>

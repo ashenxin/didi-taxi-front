@@ -6,7 +6,7 @@
 
 | 应用 | 目录 | 默认开发端口 | 技术栈 | 职责 |
 |---|---|---:|---|---|
-| 乘客端 H5 | `didi-passenger-h5` | 5173 | Vue 3 + Vite + Vant | 乘客登录、首页、下单/跟单、取消、退出登录、乘客 WS 降级。 |
+| 乘客端 H5 | `didi-passenger-h5` | 5173 | Vue 3 + Vite + Vant | 乘客登录、首页、下单/跟单、取消、退出登录、我的订单、设置、我的钱包、乘客 WS 降级。 |
 | 司机端 H5 | `didi-driver-h5` | 5174 | Vue 3 + Vite + Vant | 司机登录/注册、上线/下线听单、指派单、接单/拒单/取消、行程推进、司机 WS 推送、换队流程。 |
 | 管理后台 | `didi-Vue` | 5175 | Vue 3 + Vite + Element Plus + Vue Router | 后台登录、动态菜单、订单管理、运力配置、计价管理、换队审核、系统用户。 |
 
@@ -30,6 +30,14 @@ npm run build
 | 管理后台 | `/admin/**` | `admin-api` | `admin-api` + `passenger sys_*` 负责鉴权和数据域 |
 | 乘客端 | `/app/**` | `passenger-api` | `order-service` 负责订单状态 |
 | 司机端 | `/driver/**` | `driver-api` | `order-service` 负责订单状态，`capacity-service` 负责运力状态 |
+
+乘客钱包相关的后端边界：
+
+- 前端只访问 `passenger-api` 暴露的 `/app/api/v1/wallet/**`。
+- `wallet-service` 维护免密支付协议和支付单，默认端口 8095。
+- `calculate-service` 维护优惠券模板、用户券和用券流水。
+- `order-service` 维护 `trip_order_settlement` 订单结算快照。
+- 银行卡、借钱、车险当前只保留入口，不接真实业务接口。
 
 后端文档中的关键规则：
 
@@ -55,6 +63,10 @@ npm run build
 - 登录页仍然使用真实乘客鉴权接口。
 - 登录后的首页已经大幅改造成偏静态的高德风格地图页，包含可拖动/滚动的叫车面板和底部导航。
 - 首页中的许多按钮当前会调用 `showFeatureTodo(...)`，只提示“待开发”，不会触发下单。
+- 底部「我的」页已接入个人中心二期能力：
+  - `我的订单`：调用 `/app/api/v1/profile/orders` 分页展示订单。
+  - `设置`：调用 `/app/api/v1/profile/settings/**` 展示资料、更换手机号、注销账号。
+  - `我的钱包`：调用 `/app/api/v1/wallet/**` 展示钱包摘要、免密支付设置和优惠券列表。
 - 旧的真实订单逻辑仍保留在 `App.vue` 中：`placeOrder`、`startOrderPoll`、`fetchOrderDetailOnce`、`cancelOrder`、乘客 WS 连接和退出登录。
 
 恢复功能时需要保留的后端契约：
@@ -78,6 +90,21 @@ npm run build
   - `ws(s)://.../app/ws/v1/stream?token=...`
   - WS 只作为“订单变化提醒”的实时通道，收到 `ORDER_CHANGED` 后拉一次 HTTP 订单详情；HTTP 详情仍然是展示权威。
   - 稳态不做常驻短轮询；WS 失败或不可用时才进入 HTTP 详情轮询兜底。
+- 个人中心：
+  - `GET /app/api/v1/profile/orders`
+  - `GET /app/api/v1/profile/settings`
+  - `POST /app/api/v1/profile/settings/phone/sms/send`
+  - `POST /app/api/v1/profile/settings/phone/change`
+  - `POST /app/api/v1/profile/settings/account/cancel/sms/send`
+  - `POST /app/api/v1/profile/settings/account/cancel`
+- 钱包：
+  - `GET /app/api/v1/wallet/summary`
+  - `GET /app/api/v1/wallet/auto-pay/agreements`
+  - `POST /app/api/v1/wallet/auto-pay/agreements/sign`
+  - `POST /app/api/v1/wallet/auto-pay/agreements/{agreementId}/default`
+  - `POST /app/api/v1/wallet/auto-pay/agreements/{agreementId}/close`
+  - `GET /app/api/v1/wallet/coupons`
+  - `GET /app/api/v1/wallet/coupons/available`
 
 乘客端产品/状态规则：
 
@@ -86,6 +113,9 @@ npm run build
 - 后端按 `createdAt` 累计等待 3 分钟仍无司机接单时系统取消订单；前端应展示后端返回的 `cancelBy` / `cancelReason`，并在取消态结束跟单回到未下单首页。
 - `reDispatching=true` 表示应展示“正在重新派单”或等价文案；来源包括司机拒单、到达前取消、司机 30s 确认窗口超时释放指派。确认窗超时不写司机-乘客隔离键，下一轮仍可再次派给同一司机。
 - 不要把所有静态视觉按钮都接到 `placeOrder`。恢复真实功能时，先选择一个明确的主入口，例如目的地输入行或“现在出发”。
+- 我的钱包页面入口顺序固定为：免密支付设置、银行卡、优惠券、借钱、车险；其中银行卡、借钱、车险点击后只提示待开发。
+- 钱包摘要中可用优惠券数量为空或未加载时展示 `0 张`，不要展示 `- 张`。
+- 免密支付本期只支持支付宝/微信，允许同时开通，但只能有一个默认渠道。
 
 ## 司机端 H5 说明
 
@@ -178,6 +208,9 @@ npm run build
   - `/admin/api/v1/capacity/team-change-requests`
 - 计价：
   - `/admin/api/v1/pricing/fare-rules`
+- 钱包/优惠券：
+  - 乘客钱包在乘客端展示；后台车队营销优惠券仍处于讨论稿阶段，尚未接管理端页面。
+  - 后续后台应从计价规则详情页进入优惠券方案，只读范围复用当前登录者可见的计价规则数据域。
 - 系统用户：
   - `/admin/api/v1/system/admin-users`
 
@@ -233,4 +266,7 @@ npm run build
 - 实时与网关文档：`乘客端与司机端_WebSocket_对比.md`、`司机端_WebSocket与实时协议入门.md`、`司机端_上线听单与接单设计.md`、`网关服务_设计.md`、`网关服务_技术.md`
 - 订单与派单文档：`订单与派单_订单服务幂等与并发方案说明.md`、`订单与派单_两段式Outbox与Kafka_技术方案.md`
 - 管理后台文档：`后台管理系统_权限*`、`后台管理系统_订单管理_*`、`后台管理系统_运力配置_*`、`后台管理系统_计价管理_*`
-- 司机换队文档：`司机_换队功能_*`
+- 二期个人中心文档：`二期功能/乘客端_个人中心_我的订单_*`、`二期功能/乘客端_个人中心_设置_*`、`二期功能/乘客端_个人中心_我的钱包_免密支付与优惠券_*`
+- 司机换队文档：`二期功能/司机_换队功能_*`
+- 车队营销优惠券文档：`二期功能/车队营销优惠券_PRD.md`、`二期功能/车队营销优惠券_TECH.md`、`二期功能/车队营销优惠券_API.md`、`二期功能/车队营销优惠券_SQL.md`
+- 车队营销优惠券讨论稿：`二期功能/车队营销优惠券规则_讨论稿.md`
