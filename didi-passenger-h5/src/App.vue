@@ -129,9 +129,17 @@ const AUTO_PAY_CHANNELS = [
 const walletSummary = ref(null)
 const walletAgreements = ref([])
 const walletCoupons = ref({ list: [], total: 0, pageNo: 1, pageSize: 20 })
+const couponPackPage = ref({ list: [], total: 0, pageNo: 1, pageSize: 20 })
+const couponPackLoading = ref(false)
+const couponPackError = ref('')
 const walletLoading = ref(false)
 const walletError = ref('')
 const walletActionLoading = ref('')
+const claimableCoupons = ref([])
+const couponClaimPopupVisible = ref(false)
+const couponClaimLoading = ref(false)
+const couponClaimingId = ref(null)
+const couponClaimError = ref('')
 let rideSheetDragStartY = 0
 let rideSheetDragStartLift = 0
 let rideSheetDragging = false
@@ -167,16 +175,27 @@ const {
   switchLoginMode,
 } = useAuth()
 
-watch(authed, (v) => {
+function clearPhone() {
+  phone.value = ''
+}
+
+watch(authed, (v, oldValue) => {
   if (v) {
     passengerHomeTab.value = 'home'
+    if (!oldValue) {
+      queueMicrotask(() => checkClaimableCoupons())
+    }
   } else {
     resetMyOrders()
+    closeCouponClaimPopup()
   }
 })
 
 watch(passengerHomeTab, (tab) => {
-  if (tab === 'profile' && authed.value) {
+  if (!authed.value) return
+  if (tab === 'coupon') {
+    loadCouponPack()
+  } else if (tab === 'profile') {
     if (profileView.value === 'orders') {
       loadMyOrders()
     } else if (['settings', 'phone-change', 'account-cancel'].includes(profileView.value)) {
@@ -318,6 +337,18 @@ const myOrderTotal = computed(() => Number(myOrderPage.value?.total || 0))
 const myOrderTotalPages = computed(() => Math.max(1, Math.ceil(myOrderTotal.value / MY_ORDER_PAGE_SIZE)))
 const myOrderHasPrev = computed(() => myOrderPageNo.value > 1)
 const myOrderHasNext = computed(() => myOrderPageNo.value < myOrderTotalPages.value)
+const couponPackList = computed(() =>
+  Array.isArray(couponPackPage.value?.list)
+    ? [...couponPackPage.value.list].sort((a, b) => new Date(a.validEndAt) - new Date(b.validEndAt))
+    : [],
+)
+const couponPackEarliestExpire = computed(() => {
+  const first = couponPackList.value[0]?.validEndAt
+  if (!first) return '-'
+  const [datePart] = String(first).replace('T', ' ').split(' ')
+  const [, month, day] = datePart.split('-')
+  return month && day ? `${month}.${day}` : '-'
+})
 const trackingSteps = computed(() => {
   const c = trackingStatusCode.value
   const done = (code) => c != null && c >= code && c !== 6
@@ -791,6 +822,102 @@ function couponDiscountLabel(coupon) {
   return `-${formatMoney(coupon.discountAmount)}`
 }
 
+function couponThresholdText(coupon) {
+  const threshold = Number(coupon?.thresholdAmount || 0)
+  return threshold > 0 ? `满 ${formatMoney(threshold)} 可用` : '无门槛可用'
+}
+
+function couponValidEndText(validEndAt) {
+  if (!validEndAt) return '-'
+  const [datePart, timePart = ''] = String(validEndAt).replace('T', ' ').split(' ')
+  const [, month, day] = datePart.split('-')
+  const time = timePart.slice(0, 5)
+  return `${month}.${day} ${time} 失效`
+}
+
+function couponCityText(coupon) {
+  return CITY_NAME_MAP[coupon?.cityCode] || coupon?.cityName || coupon?.cityCode || '可用城市'
+}
+
+function couponProductText(coupon) {
+  return PRODUCT_NAME_MAP[coupon?.productCode] || coupon?.productName || coupon?.productCode || '出行'
+}
+
+async function checkClaimableCoupons() {
+  if (!authed.value) return
+  couponClaimError.value = ''
+  try {
+    const list = await getJson('/app/api/v1/wallet/coupons/claimable')
+    claimableCoupons.value = Array.isArray(list)
+      ? [...list].sort((a, b) => new Date(a.validEndAt) - new Date(b.validEndAt))
+      : []
+    couponClaimPopupVisible.value = claimableCoupons.value.length > 0
+  } catch (e) {
+    maybeDropToLogin(e)
+    couponClaimError.value = e?.message || String(e)
+  }
+}
+
+function closeCouponClaimPopup() {
+  couponClaimPopupVisible.value = false
+  couponClaimLoading.value = false
+  couponClaimingId.value = null
+  couponClaimError.value = ''
+  claimableCoupons.value = []
+}
+
+async function claimCouponsByIds(templateIds) {
+  if (couponClaimLoading.value) return
+  const ids = Array.isArray(templateIds) ? templateIds.filter((id) => id != null) : []
+  if (!ids.length) {
+    showToast({ type: 'fail', message: '暂无可领取优惠券' })
+    return
+  }
+  couponClaimLoading.value = true
+  couponClaimError.value = ''
+  couponClaimingId.value = ids.length === 1 ? ids[0] : 'ALL'
+  try {
+    const result = await postJson('/app/api/v1/wallet/coupons/claim', {
+      templateIds: ids,
+    })
+    const count = Number(result?.claimedCount || 0)
+    showToast({ type: 'success', message: count > 0 ? `已领取 ${count} 张优惠券` : '暂无可领取优惠券' })
+    if (count > 0 && walletSummary.value) {
+      walletSummary.value = {
+        ...walletSummary.value,
+        availableCouponCount: Number(walletSummary.value.availableCouponCount || 0) + count,
+      }
+    }
+    const claimedSet = new Set(ids)
+    claimableCoupons.value = claimableCoupons.value.filter((item) => !claimedSet.has(item.id))
+    if (!claimableCoupons.value.length) {
+      closeCouponClaimPopup()
+    }
+    loadWalletSummary()
+    if (passengerHomeTab.value === 'coupon') {
+      loadCouponPack()
+    }
+    if (profileView.value === 'wallet-coupons') {
+      loadWalletCoupons()
+    }
+  } catch (e) {
+    maybeDropToLogin(e)
+    couponClaimError.value = e?.message || String(e)
+    showToast({ type: 'fail', message: couponClaimError.value })
+  } finally {
+    couponClaimLoading.value = false
+    couponClaimingId.value = null
+  }
+}
+
+function claimOneCoupon(templateId) {
+  claimCouponsByIds([templateId])
+}
+
+function claimAllVisibleCoupons() {
+  claimCouponsByIds(claimableCoupons.value.map((item) => item.id))
+}
+
 async function loadWalletSummary() {
   if (!authed.value) return
   walletLoading.value = true
@@ -802,6 +929,20 @@ async function loadWalletSummary() {
     walletError.value = e?.message || String(e)
   } finally {
     walletLoading.value = false
+  }
+}
+
+async function loadCouponPack() {
+  if (!authed.value) return
+  couponPackLoading.value = true
+  couponPackError.value = ''
+  try {
+    couponPackPage.value = await getJson('/app/api/v1/wallet/coupons?status=UNUSED&pageNo=1&pageSize=20')
+  } catch (e) {
+    maybeDropToLogin(e)
+    couponPackError.value = e?.message || String(e)
+  } finally {
+    couponPackLoading.value = false
   }
 }
 
@@ -1153,8 +1294,11 @@ function onRideSheetPointerEnd(ev) {
                 type="tel"
                 maxlength="11"
                 placeholder="请输入手机号"
-                clearable
-              />
+              >
+                <template #right-icon>
+                  <van-icon v-if="phone" name="clear" class="auth-clear-icon" @click.stop.prevent="clearPhone" />
+                </template>
+              </van-field>
               <van-field
                 v-model="smsCode"
                 center
@@ -1210,8 +1354,11 @@ function onRideSheetPointerEnd(ev) {
                 type="tel"
                 maxlength="11"
                 placeholder="请输入手机号"
-                clearable
-              />
+              >
+                <template #right-icon>
+                  <van-icon v-if="phone" name="clear" class="auth-clear-icon" @click.stop.prevent="clearPhone" />
+                </template>
+              </van-field>
               <van-field
                 v-model="password"
                 type="password"
@@ -1757,11 +1904,13 @@ function onRideSheetPointerEnd(ev) {
                 <article v-for="coupon in walletCoupons.list" :key="coupon.couponId" class="wallet-coupon">
                   <div>
                     <strong>{{ coupon.couponName }}</strong>
-                    <span>满 {{ formatMoney(coupon.thresholdAmount) }} 可用</span>
+                    <span>{{ couponThresholdText(coupon) }}</span>
+                    <span>{{ couponCityText(coupon) }} · {{ couponProductText(coupon) }} · {{ coupon.companyNameSnapshot || '出行优惠' }}</span>
                   </div>
                   <div>
                     <strong>{{ couponDiscountLabel(coupon) }}</strong>
                     <span>{{ couponStatusText(coupon.status) }}</span>
+                    <span>{{ couponValidEndText(coupon.validEndAt) }}</span>
                   </div>
                 </article>
               </div>
@@ -1878,16 +2027,111 @@ function onRideSheetPointerEnd(ev) {
           </template>
         </section>
 
+        <section v-else-if="passengerHomeTab === 'coupon'" class="coupon-pack-page">
+          <header class="coupon-pack-hero">
+            <div>
+              <span>可用优惠券</span>
+              <h1>{{ couponPackPage.total || couponPackList.length }} 张</h1>
+              <p>{{ couponPackList.length ? `最早 ${couponPackEarliestExpire} 失效` : '暂无待使用优惠' }}</p>
+            </div>
+            <button type="button" :disabled="couponPackLoading" @click="loadCouponPack">
+              {{ couponPackLoading ? '刷新中' : '刷新' }}
+            </button>
+          </header>
+
+          <div class="coupon-pack-toolbar">
+            <strong>按失效时间正序</strong>
+            <span>先用快过期的券</span>
+          </div>
+
+          <p v-if="couponPackError" class="coupon-pack-error">{{ couponPackError }}</p>
+          <div v-if="!couponPackList.length" class="coupon-pack-empty">
+            <strong>{{ couponPackLoading ? '正在加载优惠券' : '暂无可用优惠券' }}</strong>
+            <span>领取后的可用优惠会展示在这里</span>
+          </div>
+          <div v-else class="coupon-pack-list" aria-label="可用优惠券列表">
+            <article v-for="coupon in couponPackList" :key="coupon.couponId" class="coupon-pack-card">
+              <div class="coupon-pack-card__value">
+                <strong>{{ couponDiscountLabel(coupon) }}</strong>
+                <span>{{ couponThresholdText(coupon) }}</span>
+              </div>
+              <div class="coupon-pack-card__body">
+                <div class="coupon-pack-card__top">
+                  <strong>{{ coupon.couponName }}</strong>
+                  <span>{{ coupon.status === 'UNUSED' ? '可用' : couponStatusText(coupon.status) }}</span>
+                </div>
+                <p>{{ couponCityText(coupon) }} · {{ couponProductText(coupon) }} · {{ coupon.companyNameSnapshot || '出行优惠' }}</p>
+                <div class="coupon-pack-card__meta">
+                  <span>{{ couponValidEndText(coupon.validEndAt) }}</span>
+                  <button type="button" @click="passengerHomeTab = 'home'">去使用</button>
+                </div>
+              </div>
+            </article>
+          </div>
+        </section>
+
         <section v-else class="passenger-tab-placeholder">
           <div class="placeholder-card">
             <div class="placeholder-card__icon">
-              {{ passengerHomeTab === 'coupon' ? '券' : '福' }}
+              福
             </div>
-            <h2>{{ passengerHomeTab === 'coupon' ? '券包' : '福利' }}</h2>
+            <h2>福利</h2>
             <p>更多权益正在准备中</p>
           </div>
         </section>
       </main>
+
+      <van-popup
+        v-model:show="couponClaimPopupVisible"
+        round
+        position="bottom"
+        :close-on-click-overlay="!couponClaimLoading"
+        class="coupon-claim-popup"
+      >
+        <section class="coupon-claim-panel" aria-label="优惠券领取弹窗">
+          <div class="coupon-claim-panel__handle" aria-hidden="true" />
+          <header class="coupon-claim-panel__head">
+            <div>
+              <span>本次登录可领取</span>
+              <h2>{{ claimableCoupons.length }} 张优惠券</h2>
+            </div>
+            <button type="button" :disabled="couponClaimLoading" @click="closeCouponClaimPopup">暂不领取</button>
+          </header>
+
+          <p v-if="couponClaimError" class="coupon-claim-panel__error">{{ couponClaimError }}</p>
+
+          <div class="coupon-claim-list">
+            <article v-for="coupon in claimableCoupons" :key="coupon.id" class="coupon-claim-card">
+              <div class="coupon-claim-card__value">
+                <strong>{{ couponDiscountLabel(coupon) }}</strong>
+                <span>{{ couponThresholdText(coupon) }}</span>
+              </div>
+              <div class="coupon-claim-card__body">
+                <div>
+                  <strong>{{ coupon.name }}</strong>
+                  <span>{{ coupon.companyNameSnapshot || '出行优惠' }}</span>
+                </div>
+                <p>{{ couponCityText(coupon) }} · {{ couponProductText(coupon) }} · {{ couponValidEndText(coupon.validEndAt) }}</p>
+              </div>
+              <button
+                class="coupon-claim-card__button"
+                type="button"
+                :disabled="couponClaimLoading"
+                @click="claimOneCoupon(coupon.id)"
+              >
+                {{ couponClaimingId === coupon.id ? '领取中' : '领取' }}
+              </button>
+            </article>
+          </div>
+
+          <div class="coupon-claim-actions">
+            <button type="button" :disabled="couponClaimLoading" @click="closeCouponClaimPopup">下次再说</button>
+            <button type="button" :disabled="couponClaimLoading || !claimableCoupons.length" @click="claimAllVisibleCoupons">
+              {{ couponClaimingId === 'ALL' ? '领取中…' : '全部领取' }}
+            </button>
+          </div>
+        </section>
+      </van-popup>
 
       <nav class="passenger-tabbar" aria-label="底部导航">
         <button
