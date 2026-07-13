@@ -43,6 +43,10 @@ const {
   maybeDropToLogin,
 } = useAuth()
 
+function clearPhone() {
+  phone.value = ''
+}
+
 const assignedLoading = ref(false)
 const assigned = ref([])
 const assignedError = ref('')
@@ -1040,7 +1044,11 @@ async function logoutAll() {
           <van-cell-group inset :title="showRegister ? '司机注册' : '司机登录'" class="driver-login-card">
             <van-tabs v-model:active="authTab" shrink animated>
               <van-tab title="验证码" name="sms">
-                <van-field v-model="phone" label="手机号" type="tel" maxlength="11" placeholder="手机号" clearable />
+                <van-field v-model="phone" label="手机号" type="tel" maxlength="11" placeholder="手机号">
+                  <template #right-icon>
+                    <van-icon v-if="phone" name="clear" class="auth-clear-icon" @click.stop.prevent="clearPhone" />
+                  </template>
+                </van-field>
                 <van-field v-model="smsCode" center clearable label="验证码" placeholder="验证码">
                   <template #button>
                     <van-button size="small" type="primary" :loading="smsSending" @click="sendSms">
@@ -1077,7 +1085,11 @@ async function logoutAll() {
                 </div>
               </van-tab>
               <van-tab title="密码" name="pwd">
-                <van-field v-model="phone" label="手机号" type="tel" maxlength="11" placeholder="手机号" clearable />
+                <van-field v-model="phone" label="手机号" type="tel" maxlength="11" placeholder="手机号">
+                  <template #right-icon>
+                    <van-icon v-if="phone" name="clear" class="auth-clear-icon" @click.stop.prevent="clearPhone" />
+                  </template>
+                </van-field>
                 <van-field v-model="password" type="password" label="密码" placeholder="密码" />
                 <p class="auth-tip">若未设置密码，可改用验证码或先注册。</p>
                 <template v-if="showRegister">

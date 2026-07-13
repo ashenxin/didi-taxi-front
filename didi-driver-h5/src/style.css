@@ -118,6 +118,12 @@ body {
   margin: 0 0 8px;
 }
 
+.auth-clear-icon {
+  padding: 4px;
+  color: #c8c9cc;
+  cursor: pointer;
+}
+
 .auth-switch-row {
   display: flex;
   justify-content: center;

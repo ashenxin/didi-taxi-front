@@ -14,7 +14,7 @@ export default defineConfig({
   server: {
     // 默认只绑 ::1 时，用 http://127.0.0.1:5174 会连不上；true 同时监听 IPv4 + 可局域网调试
     host: true,
-    port: 5174,
+    port: 6274,
     strictPort: true,
   },
 })
