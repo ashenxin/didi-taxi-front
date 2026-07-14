@@ -122,6 +122,49 @@ const WALLET_ENTRIES = [
   { key: 'loan', title: '借钱', desc: '额度与借款服务入口', icon: '借' },
   { key: 'car-insurance', title: '车险', desc: '车主保障与保险服务', icon: '险' },
 ]
+const BENEFIT_BANNERS = [
+  {
+    key: 'summer',
+    title: '夏日出行补贴',
+    desc: '签到领积分，打车券天天掉落',
+    tag: '最高减 18 元',
+    tone: 'blue',
+  },
+  {
+    key: 'commute',
+    title: '通勤福利加码',
+    desc: '早晚高峰完成任务，解锁专属券包',
+    tag: '连签翻倍',
+    tone: 'green',
+  },
+  {
+    key: 'member',
+    title: '会员成长礼',
+    desc: '积分可兑换接送机、专车与商城权益',
+    tag: 'Lv3 专享',
+    tone: 'gold',
+  },
+]
+const BENEFIT_CHECKIN_DAYS = [
+  { day: '今日', reward: '+3', desc: '积分', status: 'today' },
+  { day: '第2天', reward: '+5', desc: '积分', status: 'next' },
+  { day: '第3天', reward: '券', desc: '5元券', status: 'next' },
+  { day: '第4天', reward: '+8', desc: '积分', status: 'next' },
+  { day: '第5天', reward: '礼', desc: '惊喜包', status: 'locked' },
+  { day: '第6天', reward: '+10', desc: '积分', status: 'locked' },
+  { day: '第7天', reward: '大', desc: '大礼包', status: 'locked' },
+]
+const BENEFIT_TASKS = [
+  { key: 'checkin', title: '完成今日签到', desc: '保持连续签到，明日奖励更高', reward: '+3积分', action: '去签到', state: 'hot' },
+  { key: 'ride', title: '本周完成 2 单出行', desc: '再完成 1 单可领取 12 元券包', reward: '12元券包', action: '去打车', state: 'normal' },
+  { key: 'share', title: '邀请好友领取新人券', desc: '好友首单后你也可得积分奖励', reward: '+30积分', action: '邀请', state: 'normal' },
+]
+const BENEFIT_PRIVILEGES = [
+  { key: 'coupon', title: '每周券包', desc: '周一自动刷新', icon: '券' },
+  { key: 'priority', title: '高峰优先', desc: '会员排队加速', icon: '速' },
+  { key: 'mall', title: '积分商城', desc: '兑换出行好物', icon: '礼' },
+  { key: 'service', title: '专属客服', desc: '订单问题快响应', icon: '客' },
+]
 const AUTO_PAY_CHANNELS = [
   { channel: 'ALIPAY', name: '支付宝', desc: '适合常用支付宝出行扣款' },
   { channel: 'WECHAT', name: '微信', desc: '适合常用微信支付自动扣款' },
@@ -132,6 +175,11 @@ const walletCoupons = ref({ list: [], total: 0, pageNo: 1, pageSize: 20 })
 const couponPackPage = ref({ list: [], total: 0, pageNo: 1, pageSize: 20 })
 const couponPackLoading = ref(false)
 const couponPackError = ref('')
+const benefitOverview = ref(null)
+const benefitPoints = ref(null)
+const benefitLoading = ref(false)
+const benefitSigning = ref(false)
+const benefitError = ref('')
 const walletLoading = ref(false)
 const walletError = ref('')
 const walletActionLoading = ref('')
@@ -187,6 +235,9 @@ watch(authed, (v, oldValue) => {
     }
   } else {
     resetMyOrders()
+    benefitOverview.value = null
+    benefitPoints.value = null
+    benefitError.value = ''
     closeCouponClaimPopup()
   }
 })
@@ -195,6 +246,9 @@ watch(passengerHomeTab, (tab) => {
   if (!authed.value) return
   if (tab === 'coupon') {
     loadCouponPack()
+  } else if (tab === 'benefits') {
+    loadBenefitOverview()
+    refreshBenefitPoints()
   } else if (tab === 'profile') {
     if (profileView.value === 'orders') {
       loadMyOrders()
@@ -349,6 +403,57 @@ const couponPackEarliestExpire = computed(() => {
   const [, month, day] = datePart.split('-')
   return month && day ? `${month}.${day}` : '-'
 })
+const benefitAvailablePoints = computed(() => Number(benefitPoints.value?.availablePoints ?? benefitOverview.value?.availablePoints ?? 0))
+const benefitContinuousDays = computed(() => Number(benefitOverview.value?.continuousDays || 0))
+const benefitTodayDay = computed(() => {
+  const businessDate = benefitOverview.value?.businessDate || ''
+  const dayText = String(businessDate).split('-')[2]
+  const day = Number(dayText)
+  return Number.isFinite(day) ? day : 0
+})
+const benefitCheckinDays = computed(() => {
+  const overview = benefitOverview.value || {}
+  const days = Array.isArray(overview.days) ? overview.days : []
+  if (!days.length) return BENEFIT_CHECKIN_DAYS
+  const today = benefitTodayDay.value
+  return days.map((item) => {
+    const dayOfMonth = Number(item.dayOfMonth || 0)
+    const signed = item.signed === true
+    const isToday = dayOfMonth === today
+    let status = 'next'
+    if (signed) status = 'done'
+    else if (isToday && overview.signEnabled !== false) status = 'today'
+    else if (dayOfMonth < today || overview.signEnabled === false) status = 'locked'
+    return {
+      day: isToday ? '今日' : `第${dayOfMonth}天`,
+      reward: signed ? '✓' : `+${Number(item.rewardPoints || 0)}`,
+      desc: signed ? '已签' : '积分',
+      status,
+    }
+  })
+})
+const benefitSignButtonText = computed(() => {
+  if (benefitSigning.value) return '签到中'
+  if (benefitOverview.value?.signedToday) return '今日已签到'
+  if (benefitOverview.value && benefitOverview.value.signEnabled === false) return '暂不可签'
+  return '立即签到'
+})
+const benefitSignDisabledReason = computed(() => {
+  const reason = benefitOverview.value?.disabledReason
+  if (reason === 'MONTH_SIGN_CLOSED') return '本月签到已结束，下月 1 号刷新'
+  return reason || ''
+})
+const benefitTaskList = computed(() =>
+  BENEFIT_TASKS.map((task) =>
+    task.key === 'checkin'
+      ? {
+          ...task,
+          reward: `+${Number(benefitOverview.value?.todayRewardPoints || 5)}积分`,
+          action: benefitSignButtonText.value,
+        }
+      : task,
+  ),
+)
 const trackingSteps = computed(() => {
   const c = trackingStatusCode.value
   const done = (code) => c != null && c >= code && c !== 6
@@ -715,6 +820,83 @@ async function cancelOrder() {
 
 function showFeatureTodo(name) {
   showToast({ message: `${name}：待开发`, duration: 1600 })
+}
+
+async function loadBenefitOverview() {
+  if (!authed.value) return
+  benefitLoading.value = true
+  benefitError.value = ''
+  try {
+    const data = await getJson('/app/api/v1/benefits/overview')
+    benefitOverview.value = data
+    if (data && typeof data.availablePoints !== 'undefined') {
+      benefitPoints.value = {
+        ...(benefitPoints.value || {}),
+        availablePoints: data.availablePoints,
+      }
+    }
+  } catch (e) {
+    maybeDropToLogin(e)
+    benefitError.value = e?.message || String(e)
+  } finally {
+    benefitLoading.value = false
+  }
+}
+
+async function refreshBenefitPoints() {
+  if (!authed.value) return
+  benefitError.value = ''
+  try {
+    benefitPoints.value = await getJson('/app/api/v1/benefits/points')
+  } catch (e) {
+    maybeDropToLogin(e)
+    benefitError.value = e?.message || String(e)
+    showToast({ type: 'fail', message: benefitError.value })
+  }
+}
+
+async function signInBenefit() {
+  if (!authed.value || benefitSigning.value) return
+  if (benefitOverview.value?.signedToday) {
+    showToast({ message: '今日已签到', duration: 1600 })
+    return
+  }
+  if (benefitOverview.value?.signEnabled === false) {
+    showToast({ type: 'fail', message: benefitSignDisabledReason.value || '暂不可签到' })
+    return
+  }
+  benefitSigning.value = true
+  benefitError.value = ''
+  try {
+    const data = await postJson(
+      '/app/api/v1/benefits/sign-in',
+      {},
+      { headers: { 'X-Request-Id': createIdempotencyKey() } },
+    )
+    showToast({ type: 'success', message: data?.message || '签到成功' })
+    if (data && typeof data.availablePoints !== 'undefined') {
+      benefitPoints.value = {
+        ...(benefitPoints.value || {}),
+        availablePoints: data.availablePoints,
+      }
+    }
+    await loadBenefitOverview()
+    await refreshBenefitPoints()
+  } catch (e) {
+    maybeDropToLogin(e)
+    benefitError.value = e?.message || String(e)
+    showToast({ type: 'fail', message: benefitError.value })
+  } finally {
+    benefitSigning.value = false
+  }
+}
+
+function handleBenefitTask(task) {
+  if (task?.key === 'checkin') {
+    signInBenefit()
+    return
+  }
+  showFeatureTodo(task.title)
 }
 
 function resetSettingsForms() {
@@ -2068,6 +2250,107 @@ function onRideSheetPointerEnd(ev) {
               </div>
             </article>
           </div>
+        </section>
+
+        <section v-else-if="passengerHomeTab === 'benefits'" class="benefits-page">
+          <header class="benefits-head">
+            <div>
+              <span>福利中心</span>
+              <h1>签到领出行好礼</h1>
+            </div>
+            <button type="button" :disabled="benefitLoading" @click="refreshBenefitPoints">
+              积分 {{ benefitAvailablePoints }}
+            </button>
+          </header>
+
+          <van-swipe class="benefits-swipe" :autoplay="3200" lazy-render indicator-color="#ffffff">
+            <van-swipe-item v-for="banner in BENEFIT_BANNERS" :key="banner.key">
+              <button
+                class="benefits-banner"
+                :class="`benefits-banner--${banner.tone}`"
+                type="button"
+                @click="showFeatureTodo(banner.title)"
+              >
+                <span>{{ banner.tag }}</span>
+                <strong>{{ banner.title }}</strong>
+                <em>{{ banner.desc }}</em>
+              </button>
+            </van-swipe-item>
+          </van-swipe>
+
+          <section class="benefits-checkin-card">
+            <div class="benefits-section-head">
+              <div>
+                <span>连续签到</span>
+                <strong>已连续 {{ benefitContinuousDays }} 天</strong>
+              </div>
+              <button
+                type="button"
+                :disabled="benefitSigning || benefitOverview?.signedToday || benefitOverview?.signEnabled === false"
+                @click="signInBenefit"
+              >
+                {{ benefitSignButtonText }}
+              </button>
+            </div>
+            <p v-if="benefitError || benefitSignDisabledReason" class="benefits-error">
+              {{ benefitError || benefitSignDisabledReason }}
+            </p>
+            <div class="benefits-checkin-list">
+              <button
+                v-for="item in benefitCheckinDays"
+                :key="item.day"
+                class="benefits-checkin-item"
+                :class="`benefits-checkin-item--${item.status}`"
+                type="button"
+                @click="showFeatureTodo(item.day + '签到奖励')"
+              >
+                <span>{{ item.day }}</span>
+                <strong>{{ item.reward }}</strong>
+                <em>{{ item.desc }}</em>
+              </button>
+            </div>
+          </section>
+
+          <section class="benefits-task-card">
+            <div class="benefits-section-head">
+              <div>
+                <span>今日任务</span>
+                <strong>做任务拿更多奖励</strong>
+              </div>
+              <button type="button" @click="showFeatureTodo('全部任务')">全部</button>
+            </div>
+            <div class="benefits-task-list">
+              <article v-for="task in benefitTaskList" :key="task.key" class="benefits-task">
+                <div>
+                  <strong>{{ task.title }}</strong>
+                  <span>{{ task.desc }}</span>
+                </div>
+                <em>{{ task.reward }}</em>
+                <button type="button" @click="handleBenefitTask(task)">{{ task.action }}</button>
+              </article>
+            </div>
+          </section>
+
+          <section class="benefits-privilege-card">
+            <div class="benefits-section-head">
+              <div>
+                <span>会员权益</span>
+                <strong>Lv3 黄金会员专享</strong>
+              </div>
+            </div>
+            <div class="benefits-privilege-grid">
+              <button
+                v-for="item in BENEFIT_PRIVILEGES"
+                :key="item.key"
+                type="button"
+                @click="showFeatureTodo(item.title)"
+              >
+                <span>{{ item.icon }}</span>
+                <strong>{{ item.title }}</strong>
+                <em>{{ item.desc }}</em>
+              </button>
+            </div>
+          </section>
         </section>
 
         <section v-else class="passenger-tab-placeholder">
