@@ -38,5 +38,10 @@ export const EVENT_TYPE_MAP = {
   CANCEL: '取消订单'
 }
 
-export const statusText = (status) => (status === 0 || status ? STATUS_MAP[status] ?? status : '-')
+export const statusText = (status) => {
+  if (status === null || status === undefined || status === '') return '-'
+  const key = typeof status === 'string' ? status.trim() : status
+  if (key === '') return '-'
+  return STATUS_MAP[key] ?? String(status)
+}
 export const eventTypeText = (type) => EVENT_TYPE_MAP[type] ?? type

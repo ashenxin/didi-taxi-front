@@ -37,6 +37,18 @@ export function useDriverActiveTrip(driverId, { getJson, postJson, maybeDropToLo
     }
   }
 
+  function stopFollowingButKeepTrip() {
+    stopPollTimer()
+    activeTripOrderNo.value = ''
+    tripError.value = ''
+    finishFinalAmount.value = ''
+    try {
+      sessionStorage.removeItem(STORAGE_KEY)
+    } catch {
+      /* ignore */
+    }
+  }
+
   async function fetchTripOnce() {
     const no = activeTripOrderNo.value
     const id = driverId.value
@@ -46,14 +58,13 @@ export function useDriverActiveTrip(driverId, { getJson, postJson, maybeDropToLo
     try {
       const row = await getJson('/driver/api/v1/orders/' + encodeURIComponent(no))
       activeTrip.value = row
-      const st = row?.status
+      const st = Number(row?.status)
       if (st === 5 || st === 6) {
-        stopPollTimer()
         showToast({
           type: st === 5 ? 'success' : 'fail',
           message: st === 5 ? '订单已完成' : '订单已取消',
         })
-        clearActiveTrip()
+        stopFollowingButKeepTrip()
       }
     } catch (e) {
       tripError.value = e?.message || String(e)
@@ -95,7 +106,8 @@ export function useDriverActiveTrip(driverId, { getJson, postJson, maybeDropToLo
     try {
       await postJson(`/driver/api/v1/orders/${encodeURIComponent(no)}${pathSuffix}`, body)
       await fetchTripOnce()
-      const st = activeTrip.value?.status
+      const rawStatus = activeTrip.value?.status
+      const st = rawStatus == null ? null : Number(rawStatus)
       if (st != null && st !== 5 && st !== 6 && !pollTimer) {
         pollTimer = setInterval(fetchTripOnce, POLL_MS)
       }
@@ -199,6 +211,7 @@ export function useDriverActiveTrip(driverId, { getJson, postJson, maybeDropToLo
     dismissTripPanel,
     fetchTripOnce,
     clearActiveTrip,
+    stopFollowingButKeepTrip,
     arrive,
     startTrip,
     finishTrip,

@@ -660,7 +660,7 @@ async function fetchOrderDetailOnce() {
       showToast({ type: 'fail', message: msg, duration: 4500 })
     }
     if (code === 6) {
-      dismissOrderCard()
+      finishOrderTracking('cancelled')
       return
     }
     if (code === 5) {
@@ -820,6 +820,17 @@ async function cancelOrder() {
 
 function showFeatureTodo(name) {
   showToast({ message: `${name}：待开发`, duration: 1600 })
+}
+
+function openBenefitsPage() {
+  if (passengerHomeTab.value === 'benefits') {
+    if (authed.value) {
+      loadBenefitOverview()
+      refreshBenefitPoints()
+    }
+    return
+  }
+  passengerHomeTab.value = 'benefits'
 }
 
 async function loadBenefitOverview() {
@@ -1761,7 +1772,7 @@ function onRideSheetPointerEnd(ev) {
                 <span class="ride-actions__icon ride-actions__icon--send">送</span>
                 <span>秒送</span>
               </button>
-              <button type="button" @click="showFeatureTodo('福利中心')">
+              <button type="button" @click="openBenefitsPage">
                 <span class="ride-actions__icon ride-actions__icon--money">¥</span>
                 <span>福利中心</span>
               </button>
@@ -1793,7 +1804,7 @@ function onRideSheetPointerEnd(ev) {
             <section class="promo-section">
               <div class="promo-section__title">活动专区</div>
               <div class="promo-grid">
-                <button class="promo-mini promo-mini--warm" type="button" @click="showFeatureTodo('福利中心')">
+                <button class="promo-mini promo-mini--warm" type="button" @click="openBenefitsPage">
                   <strong>福利中心</strong>
                   <span>天天有优惠</span>
                   <em>立即查看</em>
@@ -1841,7 +1852,7 @@ function onRideSheetPointerEnd(ev) {
                 <span>当前经验56，还需44升级白金</span>
               </div>
               <div class="checkin-row">
-                <button type="button" @click="showFeatureTodo('签到')"><strong>3</strong><span>签到</span></button>
+                <button type="button" @click="openBenefitsPage"><strong>3</strong><span>签到</span></button>
                 <button type="button" @click="showFeatureTodo('第2天')"><strong>5</strong><span>第2天</span></button>
                 <button type="button" @click="showFeatureTodo('第3天')"><strong>10</strong><span>第3天</span></button>
                 <button type="button" @click="showFeatureTodo('第4天')"><strong>5</strong><span>第4天</span></button>

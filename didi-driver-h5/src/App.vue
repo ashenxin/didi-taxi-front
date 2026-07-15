@@ -175,6 +175,12 @@ const tripStepActive = computed(() => {
 
 /** 当前可点的行程动作（与 order-service status 对齐） */
 const tripActionKey = computed(() => nextTripAction(tripRow()?.status))
+const activeTripStatusCode = computed(() => {
+  const status = trip.activeTrip?.status
+  if (status == null || status === '') return null
+  const code = Number(status)
+  return Number.isNaN(code) ? null : code
+})
 
 /** 已明确为未听单：不可再点「下线」 */
 const isMonitorOffline = computed(() => monitorStatus.value === 0)
@@ -204,7 +210,7 @@ const realtimeConnectionText = computed(() => {
 })
 
 const workState = computed(() => {
-  if (trip.activeTripOrderNo) return 'trip'
+  if (trip.activeTripOrderNo || trip.activeTrip) return 'trip'
   if (assignedCount.value > 0) return 'assigned'
   if (monitorStatus.value === 1) return 'listening'
   if (monitorStatus.value === 2) return 'busy'
@@ -212,6 +218,7 @@ const workState = computed(() => {
 })
 
 const workStateTitle = computed(() => {
+  if (!trip.activeTripOrderNo && trip.activeTrip) return tripStatusLabel(trip.activeTrip.status)
   if (workState.value === 'trip') return '行程进行中'
   if (workState.value === 'assigned') return `${assignedCount.value} 笔待确认指派`
   if (workState.value === 'listening') return '听单中'
@@ -220,6 +227,7 @@ const workStateTitle = computed(() => {
 })
 
 const workStateHint = computed(() => {
+  if (!trip.activeTripOrderNo && trip.activeTrip) return '订单已到达终态，确认结果后可关闭当前行程面板。'
   if (workState.value === 'trip') return '按行程状态推进，到达、开始和完单都在下方操作。'
   if (workState.value === 'assigned') return '请确认乘客行程信息，接单或拒单后会立即同步后端。'
   if (workState.value === 'listening') return '暂无新指派，保持页面打开可接收 WebSocket 推送。'
@@ -692,9 +700,9 @@ async function loadAssigned(forceHttp = false) {
   try {
     const raw = (await getJson('/driver/api/v1/orders/assigned')) || []
     setAssignedList(await hydrateAssignedDetails(raw))
-    const tripSt = trip.activeTrip?.status
+    const tripSt = activeTripStatusCode.value
     if (tripSt === 5 || tripSt === 6) {
-      trip.clearActiveTrip()
+      trip.stopFollowingButKeepTrip()
     }
   } catch (e) {
     assignedError.value = e?.message || String(e)
@@ -1554,7 +1562,7 @@ async function logoutAll() {
               />
             </section>
 
-          <section v-if="trip.activeTripOrderNo" class="driver-section section-gap trip-panel">
+          <section v-if="trip.activeTripOrderNo || trip.activeTrip" class="driver-section section-gap trip-panel">
             <div class="driver-section__head">
               <div>
                 <div class="driver-section__label">行程操作</div>
@@ -1567,11 +1575,11 @@ async function logoutAll() {
             <van-cell-group inset>
             <van-cell>
               <template #title>
-                <span class="mono-tight">{{ trip.activeTripOrderNo }}</span>
+                  <span class="mono-tight">{{ trip.activeTripOrderNo || trip.activeTrip?.orderNo }}</span>
               </template>
               <template #label>
                 <span class="trip-panel__poll-hint">
-                  约每 {{ trip.POLL_MS / 1000 }}s 同步；完单或取消后停止轮询
+                  {{ trip.activeTripOrderNo ? `约每 ${trip.POLL_MS / 1000}s 同步；完单或取消后停止轮询` : '订单已结束，可关闭面板' }}
                 </span>
               </template>
             </van-cell>
@@ -1587,7 +1595,7 @@ async function logoutAll() {
                 </template>
               </van-cell>
 
-              <div v-if="trip.activeTrip.status !== 6" style="padding: 12px 16px 4px">
+              <div v-if="activeTripStatusCode !== 6" style="padding: 12px 16px 4px">
                 <van-steps :active="tripStepActive" active-color="#2563eb">
                   <van-step>接单</van-step>
                   <van-step>到达</van-step>
@@ -1615,7 +1623,7 @@ async function logoutAll() {
               </van-cell>
 
               <van-notice-bar
-                v-if="trip.activeTrip.status === 1 || trip.activeTrip.status === 7"
+                v-if="activeTripStatusCode === 1 || activeTripStatusCode === 7"
                 color="#ed6a0c"
                 background="#fff7e8"
                 left-icon="clock-o"
@@ -1624,7 +1632,7 @@ async function logoutAll() {
                 :scrollable="false"
               />
 
-              <div v-if="trip.activeTrip.status === 2" class="trip-cancel-before-arrive">
+              <div v-if="activeTripStatusCode === 2" class="trip-cancel-before-arrive">
                 <van-button
                   block
                   round
@@ -1681,7 +1689,7 @@ async function logoutAll() {
                 </template>
               </div>
               <van-notice-bar
-                v-else-if="trip.activeTrip.status === 5"
+                v-else-if="activeTripStatusCode === 5"
                 color="#07c160"
                 background="#f0fff4"
                 left-icon="passed"
@@ -1689,7 +1697,7 @@ async function logoutAll() {
                 :scrollable="false"
               />
               <van-notice-bar
-                v-else-if="trip.activeTrip.status === 6"
+                v-else-if="activeTripStatusCode === 6"
                 color="#ee0a24"
                 background="#fef0f0"
                 left-icon="close"

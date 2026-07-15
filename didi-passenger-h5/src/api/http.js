@@ -29,6 +29,11 @@ function createApiError(message, extra = {}) {
   return err
 }
 
+function isBusinessCode(code, expected) {
+  if (code === undefined || code === null) return false
+  return code === expected || code === String(expected) || Number(code) === expected
+}
+
 export async function requestJson(path, options = {}) {
   let resp
   const { timeoutMs, ...fetchOptions } = options || {}
@@ -71,11 +76,11 @@ export async function requestJson(path, options = {}) {
     throw createApiError('响应解析失败，请稍后重试', { httpStatus: resp.status, raw: text, cause: e })
   }
 
-  if (resp.status === 401 || json.code === 401) {
+  if (resp.status === 401 || isBusinessCode(json.code, 401)) {
     clearToken()
     throw createApiError(json.msg || '未登录或登录已失效', { code: 401, httpStatus: resp.status, data: json.data })
   }
-  if (!resp.ok || json.code !== 200) {
+  if (!resp.ok || !isBusinessCode(json.code, 200)) {
     throw createApiError(json.msg || `请求失败（${resp.status}）`, {
       code: typeof json.code === 'undefined' ? undefined : json.code,
       httpStatus: resp.status,
@@ -111,4 +116,3 @@ export async function putJson(path, body, options) {
 export async function deleteJson(path, options) {
   return requestJson(path, { ...(options || {}), method: 'DELETE' })
 }
-

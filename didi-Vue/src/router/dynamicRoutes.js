@@ -43,6 +43,21 @@ function firstRoutablePath(nodes) {
   return null
 }
 
+function filterAccessibleMenuTree(nodes) {
+  if (!Array.isArray(nodes) || !nodes.length) return []
+  const out = []
+  for (const node of nodes) {
+    if (node?.visible === false) continue
+    const children = filterAccessibleMenuTree(node.children || [])
+    if (children.length) {
+      out.push({ ...node, children })
+    } else if (node?.component && node?.path) {
+      out.push({ ...node, children: [] })
+    }
+  }
+  return out
+}
+
 /** 菜单动态路由一律挂在布局下，保证全站只有一个内容区 router-view，避免叠页 */
 function addMenuRoutes(router, nodes, pathSeen) {
   if (!nodes?.length) return
@@ -86,6 +101,7 @@ const extraRouteDefs = [
     name: 'orderDetail',
     childPath: 'orders/:orderNo',
     fullPath: '/orders/:orderNo',
+    requiresAnyMenuPath: ['/orders'],
     props: true,
     loader: () => import('../features/order/views/OrderDetailView.vue')
   },
@@ -93,6 +109,7 @@ const extraRouteDefs = [
     name: 'capacityDriverDetail',
     childPath: 'capacity/drivers/:driverId',
     fullPath: '/capacity/drivers/:driverId',
+    requiresAnyMenuPath: ['/capacity/drivers'],
     props: true,
     loader: () => import('../features/capacity/views/DriverDetailView.vue')
   },
@@ -100,6 +117,7 @@ const extraRouteDefs = [
     name: 'capacityCarsByDriver',
     childPath: 'capacity/drivers/:driverId/cars',
     fullPath: '/capacity/drivers/:driverId/cars',
+    requiresAnyMenuPath: ['/capacity/drivers', '/capacity/cars'],
     props: true,
     loader: () => import('../features/capacity/views/CarListView.vue')
   },
@@ -107,6 +125,7 @@ const extraRouteDefs = [
     name: 'capacityCarSearchList',
     childPath: 'capacity/cars',
     fullPath: '/capacity/cars',
+    requiresAnyMenuPath: ['/capacity/cars'],
     props: false,
     loader: () => import('../features/capacity/views/CarSearchListView.vue')
   },
@@ -114,6 +133,7 @@ const extraRouteDefs = [
     name: 'pricingFareRuleNew',
     childPath: 'pricing/fare-rules/new',
     fullPath: '/pricing/fare-rules/new',
+    requiresAnyMenuPath: ['/pricing/fare-rules'],
     props: { isNew: true },
     loader: () => import('../features/pricing/views/FareRuleEditView.vue')
   },
@@ -121,6 +141,7 @@ const extraRouteDefs = [
     name: 'pricingFareRuleEdit',
     childPath: 'pricing/fare-rules/:id',
     fullPath: '/pricing/fare-rules/:id',
+    requiresAnyMenuPath: ['/pricing/fare-rules'],
     props: (route) => ({ id: route.params.id, isNew: false }),
     loader: () => import('../features/pricing/views/FareRuleEditView.vue')
   }
@@ -156,11 +177,17 @@ export async function registerAdminMenuRoutes(router) {
 
   removeAllDynamicRoutes(router)
 
+  const accessibleMenuTree = filterAccessibleMenuTree(adminMenuTree.value)
   const pathSeen = new Set()
-  addMenuRoutes(router, adminMenuTree.value, pathSeen)
+  addMenuRoutes(router, accessibleMenuTree, pathSeen)
 
   for (const r of extraRouteDefs) {
     const fp = normalizeMenuPath(r.fullPath)
+    const requiredPaths = Array.isArray(r.requiresAnyMenuPath) ? r.requiresAnyMenuPath.map(normalizeMenuPath) : []
+    if (requiredPaths.length && !requiredPaths.some((p) => pathSeen.has(p))) {
+      console.warn('[admin] 当前菜单未授权附加路由，跳过', fp, r.name)
+      continue
+    }
     if (pathSeen.has(fp)) {
       console.warn('[admin] 附加路由与菜单 path 重复，跳过', fp, r.name)
       continue
@@ -189,7 +216,7 @@ export async function registerAdminMenuRoutes(router) {
     console.warn('[admin] 菜单已占用 /welcome，省略 admin-welcome 路由')
   }
 
-  const defaultPath = normalizeMenuPath(firstRoutablePath(adminMenuTree.value) || '/welcome')
+  const defaultPath = normalizeMenuPath(firstRoutablePath(accessibleMenuTree) || '/welcome')
   if (!pathSeen.has('/')) {
     pathSeen.add('/')
     router.addRoute(ADMIN_LAYOUT_NAME, {
