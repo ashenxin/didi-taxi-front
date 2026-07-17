@@ -14,8 +14,11 @@
 
 ```bash
 npm run dev
+npm test
 npm run build
 ```
+
+`npm test` 执行共享的前后端 API 契约检查；`npm run build` 会先自动执行同一检查，再进入 Vite 构建。
 
 三端都通过 `VITE_API_BASE_URL` 配置后端根地址，当前 `.env.development` 默认是 `http://127.0.0.1:18080`。后端文档中有些地方写的是网关 `8080`，以前端仓库当前环境文件为准。
 
@@ -64,10 +67,10 @@ npm run build
 - 登录后的首页已经大幅改造成偏静态的高德风格地图页，包含可拖动/滚动的叫车面板和底部导航。
 - 首页中的许多按钮当前会调用 `showFeatureTodo(...)`，只提示“待开发”，不会触发下单。
 - 底部「我的」页已接入个人中心二期能力：
-  - `我的订单`：调用 `/app/api/v1/profile/orders` 分页展示订单。
-  - `设置`：调用 `/app/api/v1/profile/settings/**` 展示资料、更换手机号、注销账号。
+  - `我的订单`：调用 `/app/api/v1/orders` 分页展示订单。
+  - `设置`：调用 `/app/api/v1/settings/**` 展示资料、更换手机号、注销账号。
   - `我的钱包`：调用 `/app/api/v1/wallet/**` 展示钱包摘要、免密支付设置和优惠券列表。
-- 旧的真实订单逻辑仍保留在 `App.vue` 中：`placeOrder`、`startOrderPoll`、`fetchOrderDetailOnce`、`cancelOrder`、乘客 WS 连接和退出登录。
+- 叫车面板的主按钮已经绑定 `placeOrder`，真实下单、详情轮询兜底、取消订单、乘客 WS 跟单和退出登录均处于启用状态；其他尚未实现的视觉入口继续使用 `showFeatureTodo(...)`。
 
 恢复功能时需要保留的后端契约：
 
@@ -91,12 +94,12 @@ npm run build
   - WS 只作为“订单变化提醒”的实时通道，收到 `ORDER_CHANGED` 后拉一次 HTTP 订单详情；HTTP 详情仍然是展示权威。
   - 稳态不做常驻短轮询；WS 失败或不可用时才进入 HTTP 详情轮询兜底。
 - 个人中心：
-  - `GET /app/api/v1/profile/orders`
-  - `GET /app/api/v1/profile/settings`
-  - `POST /app/api/v1/profile/settings/phone/sms/send`
-  - `POST /app/api/v1/profile/settings/phone/change`
-  - `POST /app/api/v1/profile/settings/account/cancel/sms/send`
-  - `POST /app/api/v1/profile/settings/account/cancel`
+  - `GET /app/api/v1/orders?type=&pageNo=&pageSize=`
+  - `GET /app/api/v1/settings/profile`
+  - `POST /app/api/v1/settings/phone-change/sms/send`
+  - `POST /app/api/v1/settings/phone-change/confirm`
+  - `POST /app/api/v1/settings/account-cancel/sms/send`
+  - `POST /app/api/v1/settings/account-cancel/confirm`
 - 钱包：
   - `GET /app/api/v1/wallet/summary`
   - `GET /app/api/v1/wallet/auto-pay/agreements`
@@ -112,7 +115,7 @@ npm run build
 - 等待态下乘客可以取消订单。
 - 后端按 `createdAt` 累计等待 3 分钟仍无司机接单时系统取消订单；前端应展示后端返回的 `cancelBy` / `cancelReason`，并在取消态结束跟单回到未下单首页。
 - `reDispatching=true` 表示应展示“正在重新派单”或等价文案；来源包括司机拒单、到达前取消、司机 30s 确认窗口超时释放指派。确认窗超时不写司机-乘客隔离键，下一轮仍可再次派给同一司机。
-- 不要把所有静态视觉按钮都接到 `placeOrder`。恢复真实功能时，先选择一个明确的主入口，例如目的地输入行或“现在出发”。
+- 不要把所有静态视觉按钮都接到 `placeOrder`；当前唯一真实下单入口是叫车面板主按钮，其他入口应在各自功能完成后再启用。
 - 我的钱包页面入口顺序固定为：免密支付设置、银行卡、优惠券、借钱、车险；其中银行卡、借钱、车险点击后只提示待开发。
 - 钱包摘要中可用优惠券数量为空或未加载时展示 `0 张`，不要展示 `- 张`。
 - 免密支付本期只支持支付宝/微信，允许同时开通，但只能有一个默认渠道。
@@ -171,7 +174,7 @@ npm run build
 - 司机 30s 内未确认待接指派时，后端释放本轮指派，订单回到 `CREATED` 并重新派单；司机端待确认列表应通过 WS/对账消失。该超时不等同主动拒单，不触发 30 分钟司机-乘客隔离。
 - 司机接成一单后，同司机其它待确认指派可能会被释放并重新派单。
 - 拒单和到达前取消会让乘客订单进入重新派单；拒单/取消原因不展示给乘客。
-- 当前司机退出登录会拒掉待确认指派并下线听单；已接单行程的退出登录行为与乘客侧“到达前退出等于取消”的理想产品口径仍有差距，改 UI 文案前需对照后端 TODO。
+- 当前司机退出登录会拒掉待确认指派、释放 `ACCEPTED` 已接未到订单并下线听单；`ARRIVED / STARTED` 等到达后或行程中订单不自动释放。
 - 提交换队申请后，司机在审核通过或撤销恢复前不可接单。
 
 ## 管理后台说明
@@ -209,8 +212,8 @@ npm run build
 - 计价：
   - `/admin/api/v1/pricing/fare-rules`
 - 钱包/优惠券：
-  - 乘客钱包在乘客端展示；后台车队营销优惠券仍处于讨论稿阶段，尚未接管理端页面。
-  - 后续后台应从计价规则详情页进入优惠券方案，只读范围复用当前登录者可见的计价规则数据域。
+  - 乘客钱包在乘客端展示；车队营销优惠券后台能力已经接入计价规则编辑页。
+  - 后台已从计价规则详情页接入优惠券方案列表、创建、编辑、发布和下架，路径为 `/admin/api/v1/pricing/fare-rules/{id}/coupons/**`。
 - 系统用户：
   - `/admin/api/v1/system/admin-users`
 
@@ -251,7 +254,7 @@ npm run build
 
 改代码后：
 
-- 在每个被修改的前端应用目录执行 `npm run build`。
+- 在每个被修改的前端应用目录执行 `npm test` 和 `npm run build`；构建前会再次校验关键前端调用是否仍有对应后端 Controller。
 - 乘客/司机订单相关改动至少手动验证登录、主操作、错误态和退出登录。
 - 管理后台改动至少验证菜单路由注册、401 跳转、一个带数据域的列表查询。
 - 除非明确为了排障直连 BFF，否则 `VITE_API_BASE_URL` 应保持走网关。
@@ -260,7 +263,7 @@ npm run build
 
 上述前端约束来自当前 `../didi-taxi` 仓库中的所有 Markdown 文档，包括：
 
-- `AGENTS.md`、`README.md`、`TODO与差距总览.md`、`功能测试清单.md`
+- `AGENTS.md`、`README.md`、`TODO与差距总览.md`
 - 乘客/司机 MVP 文档：`第一期MVP_乘客派单司机闭环_*`、`乘客司机端_最小闭环接口调用文档.md`、`乘客司机端_Redis与听单下线策略.md`
 - 登录文档：`乘客端_登录_*`、`司机端_登录注册_*`
 - 实时与网关文档：`乘客端与司机端_WebSocket_对比.md`、`司机端_WebSocket与实时协议入门.md`、`司机端_上线听单与接单设计.md`、`网关服务_设计.md`、`网关服务_技术.md`

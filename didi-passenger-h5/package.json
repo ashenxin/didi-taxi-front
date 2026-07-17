@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "test": "npm run check:api-contract",
+    "check:api-contract": "node ../scripts/check-api-contract.mjs",
+    "build": "npm run check:api-contract && vite build",
     "preview": "vite preview"
   },
   "dependencies": {

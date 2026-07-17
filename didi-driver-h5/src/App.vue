@@ -626,7 +626,7 @@ function resolveDriverWsBaseUrl() {
   if (typeof fromEnv === 'string' && fromEnv.trim()) {
     return fromEnv.trim().replace(/\/$/, '')
   }
-  // 默认沿用 API_BASE_URL；若它指向网关且网关未做 WS 转发，可在 .env.development 配置 VITE_DRIVER_WS_BASE_URL
+  // 默认沿用 API_BASE_URL，经网关转发；仅在明确排障直连 BFF 时使用环境变量覆盖。
   return apiBaseToWsBase(API_BASE_URL)
 }
 

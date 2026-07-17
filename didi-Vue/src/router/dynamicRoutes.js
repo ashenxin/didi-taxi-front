@@ -89,7 +89,6 @@ const EXTRA_ROUTE_NAMES = [
   'orderDetail',
   'capacityDriverDetail',
   'capacityCarsByDriver',
-  'capacityCarSearchList',
   'pricingFareRuleNew',
   'pricingFareRuleEdit',
   'admin-welcome',
@@ -120,14 +119,6 @@ const extraRouteDefs = [
     requiresAnyMenuPath: ['/capacity/drivers', '/capacity/cars'],
     props: true,
     loader: () => import('../features/capacity/views/CarListView.vue')
-  },
-  {
-    name: 'capacityCarSearchList',
-    childPath: 'capacity/cars',
-    fullPath: '/capacity/cars',
-    requiresAnyMenuPath: ['/capacity/cars'],
-    props: false,
-    loader: () => import('../features/capacity/views/CarSearchListView.vue')
   },
   {
     name: 'pricingFareRuleNew',

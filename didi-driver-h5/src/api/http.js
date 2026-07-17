@@ -4,8 +4,6 @@ export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || DEFAULT_BASE_U
 
 const TOKEN_KEY = 'didi_driver_token'
 
-import { parseDriverIdFromToken } from '../utils/jwt'
-
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY)
 }
@@ -21,12 +19,7 @@ export function clearToken() {
 
 function authHeaders() {
   const token = getToken()
-  if (!token) return {}
-  const driverId = parseDriverIdFromToken(token)
-  return {
-    Authorization: `Bearer ${token}`,
-    ...(driverId != null ? { 'X-User-Id': String(driverId) } : {}),
-  }
+  return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
 function createApiError(message, extra = {}) {
