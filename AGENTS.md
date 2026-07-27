@@ -96,10 +96,18 @@ npm run build
 - 个人中心：
   - `GET /app/api/v1/orders?type=&pageNo=&pageSize=`
   - `GET /app/api/v1/settings/profile`
-  - `POST /app/api/v1/settings/phone-change/sms/send`
-  - `POST /app/api/v1/settings/phone-change/confirm`
-  - `POST /app/api/v1/settings/account-cancel/sms/send`
-  - `POST /app/api/v1/settings/account-cancel/confirm`
+  - `POST /app/api/v1/account-lifecycle/phone-changes/sms/send`
+  - `POST /app/api/v1/account-lifecycle/phone-changes`
+  - `POST /app/api/v1/account-lifecycle/cancellations/precheck`
+  - `POST /app/api/v1/account-lifecycle/cancellations/sms/send`
+  - `POST /app/api/v1/account-lifecycle/cancellations`
+  - `GET /app/api/v1/account-lifecycle/operations/{operationNo}`
+  - `POST /app/api/v1/account-lifecycle/operations/{operationNo}/abort`
+  - `POST /app/api/v1/account-lifecycle/operations/{operationNo}/recheck`
+  - 换号和注销提交必须携带 `Idempotency-Key`，并把短信响应中的
+    `lifecycleVersion` 作为 `expectedLifecycleVersion` 原样提交。
+  - 注销返回 HTTP 202 只表示已受理；H5 必须保存受限 token 和 `operationNo`，
+    直到 Operation 进入 `COMPLETED` 或 `ABORTED`，不能提前提示注销完成。
 - 钱包：
   - `GET /app/api/v1/wallet/summary`
   - `GET /app/api/v1/wallet/auto-pay/agreements`

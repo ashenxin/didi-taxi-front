@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { showConfirmDialog, showToast } from 'vant'
 
-import { API_BASE_URL, getJson, postJson } from './api/http'
+import { API_BASE_URL, getJson, postJson, setToken } from './api/http'
 import { passengerWsStreamUrl, resolvePassengerWsOrigin, tryParseEnvelope } from './utils/passengerOrderWs'
 import { useAuth } from './features/auth/useAuth'
 import { createIdempotencyKey } from './utils/idempotency'
@@ -89,21 +89,45 @@ const profileView = ref('main')
 const settingsProfile = ref(null)
 const settingsLoading = ref(false)
 const settingsError = ref('')
+const LIFECYCLE_OPERATION_STORAGE_KEY = 'didi_passenger_lifecycle_operation'
+const LIFECYCLE_POLL_MS = 3000
+let lifecyclePollTimer = null
 /** 更换手机号只输入新手机号验证码；当前手机号由登录态 customerId 在服务端校验。 */
 const phoneChangeForm = reactive({
   newPhone: '',
   code: '',
+  lifecycleVersion: null,
+  submissionKey: '',
+  submissionSignature: '',
   sending: false,
   submitting: false,
   hint: '',
 })
-/** 注销账号需要当前手机号验证码和显式确认；提交成功后本地立即退出登录。 */
+/** 注销账号为异步生命周期操作；受理后切换为 Operation 进度页。 */
 const accountCancelForm = reactive({
   code: '',
   confirm: false,
+  lifecycleVersion: null,
+  submissionKey: '',
+  submissionSignature: '',
+  prechecking: false,
+  precheckDecision: '',
+  precheckBlockers: [],
   sending: false,
   submitting: false,
   hint: '',
+})
+const accountCancelOperation = reactive({
+  operationNo: '',
+  status: '',
+  lifecycleVersion: null,
+  irreversibleStarted: false,
+  activeBlockerCount: 0,
+  steps: [],
+  blockers: [],
+  loading: false,
+  acting: false,
+  error: '',
 })
 
 const RIDE_SHEET_BASE_HEIGHT = 300
@@ -714,10 +738,12 @@ onMounted(() => {
   updateRideSheetMaxLift()
   window.addEventListener('resize', updateRideSheetMaxLift)
   window.visualViewport?.addEventListener('resize', updateRideSheetMaxLift)
+  restoreAccountCancelOperation()
 })
 
 onBeforeUnmount(() => {
   stopOrderPoll()
+  stopLifecyclePoll()
   window.removeEventListener('resize', updateRideSheetMaxLift)
   window.visualViewport?.removeEventListener('resize', updateRideSheetMaxLift)
 })
@@ -914,14 +940,180 @@ function resetSettingsForms() {
   settingsError.value = ''
   phoneChangeForm.newPhone = ''
   phoneChangeForm.code = ''
+  phoneChangeForm.lifecycleVersion = null
+  phoneChangeForm.submissionKey = ''
+  phoneChangeForm.submissionSignature = ''
   phoneChangeForm.sending = false
   phoneChangeForm.submitting = false
   phoneChangeForm.hint = ''
   accountCancelForm.code = ''
   accountCancelForm.confirm = false
+  accountCancelForm.lifecycleVersion = null
+  accountCancelForm.submissionKey = ''
+  accountCancelForm.submissionSignature = ''
+  accountCancelForm.prechecking = false
+  accountCancelForm.precheckDecision = ''
+  accountCancelForm.precheckBlockers = []
   accountCancelForm.sending = false
   accountCancelForm.submitting = false
   accountCancelForm.hint = ''
+}
+
+function operationStatusText(status) {
+  const labels = {
+    REQUESTED: '请求已登记',
+    FENCED: '账号保护已生效',
+    VALIDATING: '正在核验注销条件',
+    BLOCKED: '存在待处理事项',
+    EXECUTING: '正在安全清理账号数据',
+    RETRY_PENDING: '系统将在稍后自动重试',
+    MANUAL_REVIEW: '等待人工处理',
+    COMPLETED: '注销已完成',
+    ABORTED: '注销已撤销',
+  }
+  return labels[status] || status || '等待受理'
+}
+
+function blockerActionText(blocker) {
+  return blocker?.action || blocker?.resolutionActions || '请先处理该事项后重新检查'
+}
+
+function idempotencyKeyFor(form, signature) {
+  if (!form.submissionKey || form.submissionSignature !== signature) {
+    form.submissionKey = createIdempotencyKey()
+    form.submissionSignature = signature
+  }
+  return form.submissionKey
+}
+
+function stopLifecyclePoll() {
+  if (lifecyclePollTimer != null) {
+    clearTimeout(lifecyclePollTimer)
+    lifecyclePollTimer = null
+  }
+}
+
+function clearStoredLifecycleOperation() {
+  stopLifecyclePoll()
+  try {
+    localStorage.removeItem(LIFECYCLE_OPERATION_STORAGE_KEY)
+  } catch {
+    /* ignore */
+  }
+}
+
+function persistLifecycleOperation(operationNo) {
+  if (!operationNo) return
+  try {
+    localStorage.setItem(
+      LIFECYCLE_OPERATION_STORAGE_KEY,
+      JSON.stringify({ operationNo, savedAt: Date.now() }),
+    )
+  } catch {
+    /* ignore */
+  }
+}
+
+function applyAccountCancelOperation(data) {
+  if (!data) return
+  if (data.operationNo) accountCancelOperation.operationNo = data.operationNo
+  if (data.status) accountCancelOperation.status = data.status
+  if (typeof data.lifecycleVersion === 'number') {
+    accountCancelOperation.lifecycleVersion = data.lifecycleVersion
+  }
+  if (typeof data.irreversibleStarted === 'boolean') {
+    accountCancelOperation.irreversibleStarted = data.irreversibleStarted
+  }
+  if (typeof data.activeBlockerCount === 'number') {
+    accountCancelOperation.activeBlockerCount = data.activeBlockerCount
+  }
+  if (Array.isArray(data.steps)) accountCancelOperation.steps = data.steps
+  if (Array.isArray(data.blockers)) accountCancelOperation.blockers = data.blockers
+}
+
+function scheduleLifecyclePoll() {
+  stopLifecyclePoll()
+  if (!accountCancelOperation.operationNo) return
+  if (['COMPLETED', 'ABORTED', 'BLOCKED'].includes(accountCancelOperation.status)) return
+  lifecyclePollTimer = setTimeout(refreshAccountCancelOperation, LIFECYCLE_POLL_MS)
+}
+
+function finishAccountCancelSession(status) {
+  clearStoredLifecycleOperation()
+  const completed = status === 'COMPLETED'
+  showToast({
+    type: completed ? 'success' : 'text',
+    message: completed ? '账号注销已完成' : '注销已撤销，请重新登录',
+  })
+  clearLocalSession()
+}
+
+async function refreshAccountCancelOperation() {
+  const operationNo = accountCancelOperation.operationNo
+  if (!operationNo || accountCancelOperation.loading) return
+  accountCancelOperation.loading = true
+  accountCancelOperation.error = ''
+  try {
+    const data = await getJson(`/app/api/v1/account-lifecycle/operations/${encodeURIComponent(operationNo)}`)
+    applyAccountCancelOperation(data)
+    if (['COMPLETED', 'ABORTED'].includes(accountCancelOperation.status)) {
+      finishAccountCancelSession(accountCancelOperation.status)
+      return
+    }
+  } catch (e) {
+    if (e?.code === 401 || e?.httpStatus === 401) {
+      clearStoredLifecycleOperation()
+      clearLocalSession()
+      showToast({ type: 'text', message: '注销流程已结束或会话已失效，请重新登录确认' })
+      return
+    }
+    accountCancelOperation.error = e?.message || String(e)
+  } finally {
+    accountCancelOperation.loading = false
+  }
+  scheduleLifecyclePoll()
+}
+
+function restoreAccountCancelOperation() {
+  if (!authed.value) return
+  try {
+    const saved = JSON.parse(localStorage.getItem(LIFECYCLE_OPERATION_STORAGE_KEY) || 'null')
+    if (!saved?.operationNo) return
+    accountCancelOperation.operationNo = saved.operationNo
+    passengerHomeTab.value = 'profile'
+    profileView.value = 'account-cancel-progress'
+    stopOrderPoll()
+    refreshAccountCancelOperation()
+  } catch {
+    clearStoredLifecycleOperation()
+  }
+}
+
+async function loadAccountCancelPrecheck() {
+  if (!authed.value || accountCancelForm.prechecking) return false
+  accountCancelForm.prechecking = true
+  accountCancelForm.hint = ''
+  try {
+    const data = await postJson('/app/api/v1/account-lifecycle/cancellations/precheck', {})
+    accountCancelForm.precheckDecision = data?.decision || 'UNKNOWN'
+    accountCancelForm.precheckBlockers = Array.isArray(data?.blockers) ? data.blockers : []
+    if (accountCancelForm.precheckDecision !== 'PASS') {
+      accountCancelForm.hint =
+        accountCancelForm.precheckDecision === 'BLOCKED'
+          ? '存在需要先处理的事项，暂时不能提交注销'
+          : '暂时无法确认注销条件，请稍后重试'
+      return false
+    }
+    return true
+  } catch (e) {
+    maybeDropToLogin(e)
+    accountCancelForm.precheckDecision = 'UNKNOWN'
+    accountCancelForm.precheckBlockers = []
+    accountCancelForm.hint = e?.message || String(e)
+    return false
+  } finally {
+    accountCancelForm.prechecking = false
+  }
 }
 
 /** 设置页每次进入都重新拉取账号摘要，避免更换手机号后展示旧脱敏号码。 */
@@ -1225,6 +1417,7 @@ function openAccountCancel() {
   accountCancelForm.code = ''
   accountCancelForm.confirm = false
   loadSettingsProfile()
+  loadAccountCancelPrecheck()
 }
 
 function backToProfileMain() {
@@ -1241,11 +1434,18 @@ function backToSettingsHome() {
 
 async function sendPhoneChangeSms() {
   phoneChangeForm.hint = ''
+  phoneChangeForm.lifecycleVersion = null
+  phoneChangeForm.submissionKey = ''
+  phoneChangeForm.submissionSignature = ''
   phoneChangeForm.sending = true
   try {
-    const data = await postJson('/app/api/v1/settings/phone-change/sms/send', {
-      newPhone: phoneChangeForm.newPhone,
+    const data = await postJson('/app/api/v1/account-lifecycle/phone-changes/sms/send', {
+      phone: phoneChangeForm.newPhone,
     })
+    if (!Number.isInteger(data?.lifecycleVersion) || data.lifecycleVersion < 0) {
+      throw new Error('账号版本获取失败，请刷新页面后重试')
+    }
+    phoneChangeForm.lifecycleVersion = data.lifecycleVersion
     if (data?.mockCode) {
       phoneChangeForm.code = data.mockCode
       phoneChangeForm.hint = '验证码已发送，已为本地 mock 自动填入'
@@ -1262,14 +1462,29 @@ async function sendPhoneChangeSms() {
 
 async function confirmPhoneChange() {
   phoneChangeForm.hint = ''
+  if (!Number.isInteger(phoneChangeForm.lifecycleVersion)) {
+    phoneChangeForm.hint = '请先发送并获取本次验证码'
+    return
+  }
   phoneChangeForm.submitting = true
   try {
-    await postJson('/app/api/v1/settings/phone-change/confirm', {
+    const signature = JSON.stringify({
+      expectedLifecycleVersion: phoneChangeForm.lifecycleVersion,
       newPhone: phoneChangeForm.newPhone,
       code: phoneChangeForm.code,
     })
+    const data = await postJson('/app/api/v1/account-lifecycle/phone-changes', {
+      expectedLifecycleVersion: phoneChangeForm.lifecycleVersion,
+      newPhone: phoneChangeForm.newPhone,
+      code: phoneChangeForm.code,
+    }, {
+      headers: { 'Idempotency-Key': idempotencyKeyFor(phoneChangeForm, signature) },
+    })
+    if (!data?.completed || data?.status !== 'COMPLETED') {
+      throw new Error('手机号更换结果尚未完成，请稍后重试')
+    }
     showToast({ type: 'success', message: '手机号已更换，请重新登录' })
-    // 服务端已提升 tokenVersion；本地同步清理，避免继续用旧手机号身份操作。
+    // 服务端已提升 authEpoch；本地同步清理，避免继续用旧手机号身份操作。
     stopOrderPoll()
     clearLocalSession()
   } catch (e) {
@@ -1282,9 +1497,17 @@ async function confirmPhoneChange() {
 
 async function sendAccountCancelSms() {
   accountCancelForm.hint = ''
+  accountCancelForm.lifecycleVersion = null
+  accountCancelForm.submissionKey = ''
+  accountCancelForm.submissionSignature = ''
+  if (!(await loadAccountCancelPrecheck())) return
   accountCancelForm.sending = true
   try {
-    const data = await postJson('/app/api/v1/settings/account-cancel/sms/send', {})
+    const data = await postJson('/app/api/v1/account-lifecycle/cancellations/sms/send', {})
+    if (!Number.isInteger(data?.lifecycleVersion) || data.lifecycleVersion < 0) {
+      throw new Error('账号版本获取失败，请刷新页面后重试')
+    }
+    accountCancelForm.lifecycleVersion = data.lifecycleVersion
     if (data?.mockCode) {
       accountCancelForm.code = data.mockCode
       accountCancelForm.hint = `验证码已发送至 ${data.maskedPhone || '当前手机号'}，已为本地 mock 自动填入`
@@ -1316,21 +1539,91 @@ async function confirmAccountCancel() {
     return
   }
   accountCancelForm.hint = ''
+  if (!Number.isInteger(accountCancelForm.lifecycleVersion)) {
+    accountCancelForm.hint = '请先发送并获取本次验证码'
+    return
+  }
   accountCancelForm.submitting = true
   try {
-    await postJson('/app/api/v1/settings/account-cancel/confirm', {
+    const signature = JSON.stringify({
+      expectedLifecycleVersion: accountCancelForm.lifecycleVersion,
       code: accountCancelForm.code,
       confirm: accountCancelForm.confirm,
     })
-    showToast({ type: 'success', message: '账号已注销' })
-    // 注销后历史订单仍在后台保留，但用户端当前会话必须马上结束。
+    const data = await postJson('/app/api/v1/account-lifecycle/cancellations', {
+      expectedLifecycleVersion: accountCancelForm.lifecycleVersion,
+      code: accountCancelForm.code,
+      confirm: accountCancelForm.confirm,
+    }, {
+      headers: { 'Idempotency-Key': idempotencyKeyFor(accountCancelForm, signature) },
+    })
+    applyAccountCancelOperation(data)
     stopOrderPoll()
-    clearLocalSession()
+    if (data?.completed || data?.status === 'COMPLETED') {
+      finishAccountCancelSession('COMPLETED')
+      return
+    }
+    if (!data?.operationNo || !data?.accessToken) {
+      throw new Error('注销受理结果不完整，请联系客服处理')
+    }
+    setToken(data.accessToken)
+    persistLifecycleOperation(data.operationNo)
+    passengerHomeTab.value = 'profile'
+    profileView.value = 'account-cancel-progress'
+    showToast({ type: 'success', message: '注销申请已受理' })
+    refreshAccountCancelOperation()
   } catch (e) {
     maybeDropToLogin(e)
     accountCancelForm.hint = e?.message || String(e)
   } finally {
     accountCancelForm.submitting = false
+  }
+}
+
+async function recheckAccountCancel() {
+  if (!accountCancelOperation.operationNo || accountCancelOperation.acting) return
+  accountCancelOperation.acting = true
+  accountCancelOperation.error = ''
+  try {
+    const data = await postJson(
+      `/app/api/v1/account-lifecycle/operations/${encodeURIComponent(accountCancelOperation.operationNo)}/recheck`,
+      {},
+    )
+    applyAccountCancelOperation(data)
+    showToast({ type: 'success', message: '已重新检查注销条件' })
+    scheduleLifecyclePoll()
+  } catch (e) {
+    if (!maybeDropToLogin(e)) accountCancelOperation.error = e?.message || String(e)
+  } finally {
+    accountCancelOperation.acting = false
+  }
+}
+
+async function abortAccountCancel() {
+  if (!accountCancelOperation.operationNo || accountCancelOperation.acting) return
+  try {
+    await showConfirmDialog({
+      title: '撤销注销申请',
+      message: '撤销后受限会话会立即失效，需要重新登录。',
+      confirmButtonText: '确认撤销',
+      cancelButtonText: '继续注销',
+    })
+  } catch {
+    return
+  }
+  accountCancelOperation.acting = true
+  accountCancelOperation.error = ''
+  try {
+    const data = await postJson(
+      `/app/api/v1/account-lifecycle/operations/${encodeURIComponent(accountCancelOperation.operationNo)}/abort`,
+      {},
+    )
+    applyAccountCancelOperation(data)
+    finishAccountCancelSession('ABORTED')
+  } catch (e) {
+    if (!maybeDropToLogin(e)) accountCancelOperation.error = e?.message || String(e)
+  } finally {
+    accountCancelOperation.acting = false
   }
 }
 
@@ -2194,6 +2487,24 @@ function onRideSheetPointerEnd(ev) {
                 <p>该手机号可重新注册为新账号，但不会继承原账号订单。</p>
                 <p>若当前存在进行中订单，请先完成或取消订单后再注销。</p>
               </div>
+              <div v-if="accountCancelForm.prechecking" class="lifecycle-precheck">
+                <van-loading size="18px" color="#04a7df">正在检查注销条件</van-loading>
+              </div>
+              <div
+                v-else-if="accountCancelForm.precheckBlockers.length"
+                class="lifecycle-blocker-list"
+                aria-label="注销阻断项"
+              >
+                <article
+                  v-for="blocker in accountCancelForm.precheckBlockers"
+                  :key="`${blocker.domain}-${blocker.code}-${blocker.resourceNo || ''}`"
+                  class="lifecycle-blocker"
+                >
+                  <strong>{{ blocker.code || blocker.domain || '待处理事项' }}</strong>
+                  <span>{{ blockerActionText(blocker) }}</span>
+                  <small v-if="blocker.resourceNo">关联业务号：{{ blocker.resourceNo }}</small>
+                </article>
+              </div>
               <van-cell-group inset>
                 <van-field
                   v-model="accountCancelForm.code"
@@ -2203,7 +2514,12 @@ function onRideSheetPointerEnd(ev) {
                   clearable
                 >
                   <template #button>
-                    <van-button size="small" type="primary" :loading="accountCancelForm.sending" @click="sendAccountCancelSms">
+                    <van-button
+                      size="small"
+                      type="primary"
+                      :loading="accountCancelForm.sending || accountCancelForm.prechecking"
+                      @click="sendAccountCancelSms"
+                    >
                       发送验证码
                     </van-button>
                   </template>
@@ -2216,6 +2532,98 @@ function onRideSheetPointerEnd(ev) {
               <van-button type="danger" round block :loading="accountCancelForm.submitting" @click="confirmAccountCancel">
                 确认注销账号
               </van-button>
+            </section>
+          </template>
+
+          <template v-else-if="profileView === 'account-cancel-progress'">
+            <section class="profile-card settings-card lifecycle-progress-card">
+              <div class="settings-head">
+                <span></span>
+                <strong>注销进度</strong>
+              </div>
+              <div class="lifecycle-status-panel">
+                <span>当前状态</span>
+                <strong>{{ operationStatusText(accountCancelOperation.status) }}</strong>
+                <small>操作编号：{{ accountCancelOperation.operationNo }}</small>
+              </div>
+
+              <van-loading
+                v-if="accountCancelOperation.loading && !accountCancelOperation.status"
+                size="22px"
+                color="#04a7df"
+              >
+                正在查询处理进度
+              </van-loading>
+
+              <div v-if="accountCancelOperation.blockers.length" class="lifecycle-blocker-list">
+                <article
+                  v-for="blocker in accountCancelOperation.blockers"
+                  :key="`${blocker.domain}-${blocker.code}-${blocker.resourceNo || ''}`"
+                  class="lifecycle-blocker"
+                >
+                  <strong>{{ blocker.code || blocker.domain || '待处理事项' }}</strong>
+                  <span>{{ blockerActionText(blocker) }}</span>
+                  <small v-if="blocker.resourceNo">关联业务号：{{ blocker.resourceNo }}</small>
+                </article>
+              </div>
+
+              <div v-if="accountCancelOperation.steps.length" class="lifecycle-step-list">
+                <div
+                  v-for="step in accountCancelOperation.steps"
+                  :key="step.stepCode"
+                  class="lifecycle-step"
+                >
+                  <span>{{ step.stepCode }}</span>
+                  <strong>{{ step.status }}</strong>
+                </div>
+              </div>
+
+              <p v-if="accountCancelOperation.error" class="settings-hint lifecycle-error">
+                {{ accountCancelOperation.error }}
+              </p>
+              <p
+                v-else-if="accountCancelOperation.status === 'MANUAL_REVIEW'"
+                class="settings-hint"
+              >
+                系统无法自动继续，工作人员会保留操作记录并进行处理。
+              </p>
+              <p v-else class="settings-hint">
+                注销完成前请保留本页面。处理中只允许查询订单、处理欠款和管理本次注销。
+              </p>
+
+              <div class="lifecycle-actions">
+                <van-button
+                  plain
+                  type="primary"
+                  round
+                  :loading="accountCancelOperation.loading"
+                  @click="refreshAccountCancelOperation"
+                >
+                  刷新进度
+                </van-button>
+                <van-button
+                  v-if="accountCancelOperation.status === 'BLOCKED'"
+                  type="primary"
+                  round
+                  :loading="accountCancelOperation.acting"
+                  @click="recheckAccountCancel"
+                >
+                  重新检查
+                </van-button>
+                <van-button
+                  v-if="
+                    ['FENCED', 'BLOCKED'].includes(accountCancelOperation.status) &&
+                    !accountCancelOperation.irreversibleStarted
+                  "
+                  plain
+                  type="danger"
+                  round
+                  :loading="accountCancelOperation.acting"
+                  @click="abortAccountCancel"
+                >
+                  撤销注销
+                </van-button>
+              </div>
             </section>
           </template>
         </section>

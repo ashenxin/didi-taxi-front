@@ -3674,6 +3674,104 @@ body:has(.page--passenger) {
   font-weight: 850;
 }
 
+.lifecycle-precheck {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0;
+}
+
+.lifecycle-blocker-list,
+.lifecycle-step-list {
+  display: grid;
+  gap: 8px;
+}
+
+.lifecycle-blocker {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  border: 1px solid rgba(180, 35, 24, 0.12);
+  border-radius: 14px;
+  background: #fff8f8;
+}
+
+.lifecycle-blocker strong {
+  color: #b42318;
+  font-size: 13px;
+  font-weight: 950;
+}
+
+.lifecycle-blocker span,
+.lifecycle-blocker small {
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.lifecycle-progress-card {
+  align-content: start;
+}
+
+.lifecycle-status-panel {
+  display: grid;
+  gap: 7px;
+  padding: 16px;
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, rgba(4, 167, 223, 0.14), rgba(20, 184, 154, 0.12)),
+    #f6fbff;
+}
+
+.lifecycle-status-panel span,
+.lifecycle-status-panel small {
+  color: #667085;
+  font-size: 12px;
+}
+
+.lifecycle-status-panel strong {
+  color: #057fa8;
+  font-size: 20px;
+  font-weight: 950;
+}
+
+.lifecycle-step {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  padding: 0 12px;
+  border-radius: 12px;
+  background: #f6f8fa;
+}
+
+.lifecycle-step span {
+  min-width: 0;
+  overflow: hidden;
+  color: #475467;
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lifecycle-step strong {
+  flex-shrink: 0;
+  color: #057fa8;
+  font-size: 11px;
+  font-weight: 950;
+}
+
+.lifecycle-error {
+  color: #b42318;
+}
+
+.lifecycle-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 10px;
+}
+
 @media (max-height: 850px) {
   .ride-sheet__tabs {
     height: 62px;
