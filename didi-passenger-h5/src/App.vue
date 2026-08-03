@@ -84,6 +84,15 @@ const myOrderPage = ref({
   pageSize: 10,
   type: 'ALL',
 })
+const settlementPanel = reactive({
+  visible: false,
+  orderNo: '',
+  detail: null,
+  loading: false,
+  payingChannel: '',
+  error: '',
+})
+const pendingManualPaymentAttempts = new Map()
 /** 个人中心子页面：main 只展示入口，orders 与 settings 点击后再下钻。 */
 const profileView = ref('main')
 const settingsProfile = ref(null)
@@ -974,8 +983,52 @@ function operationStatusText(status) {
   return labels[status] || status || '等待受理'
 }
 
+const LIFECYCLE_BLOCKER_CODE_LABELS = Object.freeze({
+  ACTIVE_ORDER: '存在进行中订单',
+  UNPAID_ORDER: '存在待支付订单',
+  SETTLEMENT_UNKNOWN: '订单结算状态异常',
+  LOCKED_COUPON: '存在已锁定的优惠券',
+  PAYMENT_IN_PROGRESS: '存在处理中的支付',
+  DUPLICATE_PAYMENT_SUCCESS: '支付结果异常',
+  AUTO_PAY_TERMINATION_UNKNOWN: '免密支付解约结果待确认',
+})
+
+const LIFECYCLE_BLOCKER_ACTION_LABELS = Object.freeze({
+  CANCEL_ORDER: '请先完成或取消该订单',
+  PAY_OUTSTANDING: '请先结清待支付订单',
+  CONTACT_OPERATIONS: '请联系客服处理',
+  COMPLETE_OR_CANCEL_ORDER: '请先完成或取消相关订单',
+  WAIT_OR_QUERY_PAYMENT: '请等待支付结果，或稍后重新查询',
+  QUERY_OR_MANUAL_REVIEW: '请稍后重新查询，或联系客服处理',
+})
+
+const LIFECYCLE_BLOCKER_DOMAIN_LABELS = Object.freeze({
+  ORDER: '订单相关事项',
+  CALCULATE: '优惠权益相关事项',
+  WALLET: '支付相关事项',
+})
+
+function blockerTitleText(blocker) {
+  const code = blocker?.code
+  if (code && LIFECYCLE_BLOCKER_CODE_LABELS[code]) {
+    return LIFECYCLE_BLOCKER_CODE_LABELS[code]
+  }
+  if (typeof code === 'string' && /[\u4e00-\u9fff]/.test(code)) return code
+  return LIFECYCLE_BLOCKER_DOMAIN_LABELS[blocker?.domain] || '存在待处理事项'
+}
+
 function blockerActionText(blocker) {
-  return blocker?.action || blocker?.resolutionActions || '请先处理该事项后重新检查'
+  const rawActions = Array.isArray(blocker?.resolutionActions)
+    ? blocker.resolutionActions
+    : [blocker?.action || blocker?.resolutionActions]
+  const labels = rawActions
+    .filter(Boolean)
+    .map((action) => {
+      if (LIFECYCLE_BLOCKER_ACTION_LABELS[action]) return LIFECYCLE_BLOCKER_ACTION_LABELS[action]
+      return typeof action === 'string' && /[\u4e00-\u9fff]/.test(action) ? action : ''
+    })
+    .filter(Boolean)
+  return labels.join('；') || '请先处理该事项后重新检查'
 }
 
 function idempotencyKeyFor(form, signature) {
@@ -1711,13 +1764,98 @@ function orderTimeText(order) {
 }
 
 function orderActions(order) {
+  const settlementActions = Array.isArray(order?.settlement?.actions) ? order.settlement.actions : []
   const actions = Array.isArray(order?.actions) ? order.actions : []
-  if (actions.length > 0) return actions
+  if (settlementActions.length > 0 || actions.length > 0) return [...settlementActions, ...actions]
   return [
     { code: 'APPLY_INVOICE', label: '申请开票', disabled: true },
     { code: 'RETURN_TRIP', label: '呼叫返程', disabled: true },
     { code: 'RATE', label: '评价', disabled: true },
   ]
+}
+
+function moneyText(amount) {
+  if (amount == null || amount === '') return '-'
+  const number = Number(amount)
+  return Number.isNaN(number) ? String(amount) : `¥${number.toFixed(2)}`
+}
+
+function paymentChannelName(channel) {
+  return channel === 'WECHAT' ? '微信支付' : channel === 'ALIPAY' ? '支付宝' : channel
+}
+
+function settlementChannels() {
+  const channels = settlementPanel.detail?.availableChannels
+  return Array.isArray(channels) ? channels.filter((channel) => ['ALIPAY', 'WECHAT'].includes(channel)) : []
+}
+
+async function openSettlementPanel(order) {
+  const orderNo = order?.orderNo
+  if (!orderNo) return
+  settlementPanel.visible = true
+  settlementPanel.orderNo = orderNo
+  settlementPanel.detail = null
+  settlementPanel.error = ''
+  settlementPanel.loading = true
+  try {
+    settlementPanel.detail = await getJson(
+      `/app/api/v1/orders/${encodeURIComponent(orderNo)}/settlement`,
+    )
+  } catch (e) {
+    maybeDropToLogin(e)
+    settlementPanel.error = e?.message || String(e)
+  } finally {
+    settlementPanel.loading = false
+  }
+}
+
+function closeSettlementPanel() {
+  if (settlementPanel.payingChannel) return
+  settlementPanel.visible = false
+}
+
+async function paySettlement(channel) {
+  const orderNo = settlementPanel.orderNo
+  if (!orderNo || settlementPanel.payingChannel) return
+  const signature = `${orderNo}:${channel}`
+  let idempotencyKey = pendingManualPaymentAttempts.get(signature)
+  if (!idempotencyKey) {
+    idempotencyKey = createIdempotencyKey()
+    pendingManualPaymentAttempts.set(signature, idempotencyKey)
+  }
+  settlementPanel.payingChannel = channel
+  settlementPanel.error = ''
+  try {
+    const result = await postJson(
+      `/app/api/v1/orders/${encodeURIComponent(orderNo)}/payments`,
+      { channel },
+      { headers: { 'Idempotency-Key': idempotencyKey } },
+    )
+    pendingManualPaymentAttempts.delete(signature)
+    const checkoutUrl = result?.invokePayload?.checkoutUrl
+    if (checkoutUrl) {
+      window.location.assign(checkoutUrl)
+      return
+    }
+    showToast({ type: result?.status === 'SUCCESS' ? 'success' : 'primary', message: '支付请求已提交' })
+    await openSettlementPanel({ orderNo })
+    await loadMyOrders()
+  } catch (e) {
+    if (e?.httpStatus > 0) pendingManualPaymentAttempts.delete(signature)
+    maybeDropToLogin(e)
+    settlementPanel.error = e?.message || String(e)
+  } finally {
+    settlementPanel.payingChannel = ''
+  }
+}
+
+function handleOrderAction(order, action) {
+  if (action?.disabled !== false) return
+  if (action.code === 'PAY_NOW' || action.code === 'VIEW_BILL') {
+    openSettlementPanel(order)
+    return
+  }
+  showFeatureTodo(action.label)
 }
 
 function clampRideSheetLift(v) {
@@ -2266,13 +2404,18 @@ function onRideSheetPointerEnd(ev) {
                     </span>
                   </div>
 
+                  <div v-if="order.settlement?.message" class="my-order-settlement">
+                    <span>结算状态</span>
+                    <strong>{{ order.settlement.message }}</strong>
+                  </div>
+
                   <div class="my-order-actions">
                     <button
                       v-for="action in orderActions(order)"
                       :key="action.code"
                       type="button"
                       :disabled="action.disabled !== false"
-                      @click="showFeatureTodo(action.label)"
+                      @click="handleOrderAction(order, action)"
                     >
                       {{ action.label }}
                     </button>
@@ -2500,7 +2643,7 @@ function onRideSheetPointerEnd(ev) {
                   :key="`${blocker.domain}-${blocker.code}-${blocker.resourceNo || ''}`"
                   class="lifecycle-blocker"
                 >
-                  <strong>{{ blocker.code || blocker.domain || '待处理事项' }}</strong>
+                  <strong>{{ blockerTitleText(blocker) }}</strong>
                   <span>{{ blockerActionText(blocker) }}</span>
                   <small v-if="blocker.resourceNo">关联业务号：{{ blocker.resourceNo }}</small>
                 </article>
@@ -2561,7 +2704,7 @@ function onRideSheetPointerEnd(ev) {
                   :key="`${blocker.domain}-${blocker.code}-${blocker.resourceNo || ''}`"
                   class="lifecycle-blocker"
                 >
-                  <strong>{{ blocker.code || blocker.domain || '待处理事项' }}</strong>
+                  <strong>{{ blockerTitleText(blocker) }}</strong>
                   <span>{{ blockerActionText(blocker) }}</span>
                   <small v-if="blocker.resourceNo">关联业务号：{{ blocker.resourceNo }}</small>
                 </article>
@@ -2782,6 +2925,62 @@ function onRideSheetPointerEnd(ev) {
           </div>
         </section>
       </main>
+
+      <van-popup
+        v-model:show="settlementPanel.visible"
+        round
+        position="bottom"
+        :close-on-click-overlay="!settlementPanel.payingChannel"
+        class="settlement-popup"
+      >
+        <section class="settlement-panel" aria-label="订单账单与支付">
+          <div class="settlement-panel__handle" aria-hidden="true" />
+          <header class="settlement-panel__head">
+            <div>
+              <span>订单账单</span>
+              <strong>{{ settlementPanel.orderNo }}</strong>
+            </div>
+            <button type="button" :disabled="Boolean(settlementPanel.payingChannel)" @click="closeSettlementPanel">关闭</button>
+          </header>
+
+          <div v-if="settlementPanel.loading" class="settlement-panel__loading">
+            <van-loading size="22px" color="#04a7df">账单加载中</van-loading>
+          </div>
+          <van-notice-bar
+            v-else-if="settlementPanel.error"
+            color="#ee0a24"
+            background="#fff1f0"
+            left-icon="warning-o"
+            :text="settlementPanel.error"
+            wrapable
+            :scrollable="false"
+          />
+          <template v-else-if="settlementPanel.detail">
+            <div class="settlement-panel__status">
+              <span>{{ settlementPanel.detail.message || '账单状态已更新' }}</span>
+              <strong>{{ moneyText(settlementPanel.detail.payableAmount) }}</strong>
+            </div>
+            <dl class="settlement-panel__bill">
+              <div><dt>行程费用</dt><dd>{{ moneyText(settlementPanel.detail.originalFare) }}</dd></div>
+              <div><dt>优惠减免</dt><dd>-{{ moneyText(settlementPanel.detail.discountAmount) }}</dd></div>
+              <div><dt>已支付</dt><dd>{{ moneyText(settlementPanel.detail.paidAmount) }}</dd></div>
+              <div v-if="settlementPanel.detail.couponName"><dt>使用优惠</dt><dd>{{ settlementPanel.detail.couponName }}</dd></div>
+            </dl>
+            <div v-if="settlementPanel.detail.settlementStatus === 'PAYMENT_REQUIRED'" class="settlement-panel__channels">
+              <button
+                v-for="channel in settlementChannels()"
+                :key="channel"
+                type="button"
+                :disabled="Boolean(settlementPanel.payingChannel)"
+                @click="paySettlement(channel)"
+              >
+                {{ settlementPanel.payingChannel === channel ? '正在发起支付…' : paymentChannelName(channel) }}
+              </button>
+            </div>
+            <p v-else class="settlement-panel__hint">{{ settlementPanel.detail.message }}</p>
+          </template>
+        </section>
+      </van-popup>
 
       <van-popup
         v-model:show="couponClaimPopupVisible"

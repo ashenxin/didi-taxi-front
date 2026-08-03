@@ -10,6 +10,8 @@ const contracts = [
   ['POST', '/app/api/v1/orders', 'didi-passenger-h5', "postJson('/app/api/v1/orders'"],
   ['GET', '/app/api/v1/orders/{orderNo}', 'didi-passenger-h5', "getJson('/app/api/v1/orders/'"],
   ['POST', '/app/api/v1/orders/{orderNo}/cancel', 'didi-passenger-h5', '/cancel`'],
+  ['GET', '/app/api/v1/orders/{orderNo}/settlement', 'didi-passenger-h5', '/settlement`'],
+  ['POST', '/app/api/v1/orders/{orderNo}/payments', 'didi-passenger-h5', '/payments`'],
   ['GET', '/app/api/v1/settings/profile', 'didi-passenger-h5', '/app/api/v1/settings/profile'],
   ['POST', '/app/api/v1/account-lifecycle/cancellations/precheck', 'didi-passenger-h5', '/account-lifecycle/cancellations/precheck'],
   ['POST', '/app/api/v1/account-lifecycle/cancellations/sms/send', 'didi-passenger-h5', '/account-lifecycle/cancellations/sms/send'],

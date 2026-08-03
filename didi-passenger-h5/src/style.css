@@ -3300,6 +3300,23 @@ body:has(.page--passenger) {
   white-space: nowrap;
 }
 
+.my-order-settlement {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: 12px;
+  color: #667085;
+  background: #fff7e8;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.my-order-settlement strong {
+  color: #f26a21;
+  font-size: 13px;
+}
+
 .my-order-actions {
   justify-content: flex-end;
   flex-wrap: wrap;
@@ -3319,6 +3336,129 @@ body:has(.page--passenger) {
 .my-order-actions button:disabled {
   color: #98a2b3;
   background: #f5f7fa;
+}
+
+.settlement-popup {
+  overflow: hidden;
+}
+
+.settlement-panel {
+  display: grid;
+  gap: 16px;
+  padding: 10px 18px calc(22px + env(safe-area-inset-bottom));
+  background: #f7f9fc;
+}
+
+.settlement-panel__handle {
+  width: 40px;
+  height: 4px;
+  margin: 0 auto;
+  border-radius: 999px;
+  background: #d0d5dd;
+}
+
+.settlement-panel__head,
+.settlement-panel__status,
+.settlement-panel__bill div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settlement-panel__head div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.settlement-panel__head span {
+  color: #667085;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.settlement-panel__head strong {
+  overflow: hidden;
+  color: #101828;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settlement-panel__head button {
+  border: 0;
+  color: #667085;
+  background: transparent;
+  font-weight: 800;
+}
+
+.settlement-panel__loading {
+  display: grid;
+  place-items: center;
+  min-height: 160px;
+}
+
+.settlement-panel__status {
+  padding: 16px;
+  border-radius: 16px;
+  color: #667085;
+  background: #ffffff;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.settlement-panel__status strong {
+  color: #101828;
+  font-size: 26px;
+}
+
+.settlement-panel__bill {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 16px;
+  border-radius: 16px;
+  background: #ffffff;
+}
+
+.settlement-panel__bill dt,
+.settlement-panel__bill dd {
+  margin: 0;
+  color: #667085;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.settlement-panel__bill dd {
+  color: #344054;
+}
+
+.settlement-panel__channels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settlement-panel__channels button {
+  min-height: 44px;
+  border: 0;
+  border-radius: 999px;
+  color: #ffffff;
+  background: linear-gradient(135deg, #04a7df, #1989fa);
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.settlement-panel__channels button:disabled {
+  opacity: 0.6;
+}
+
+.settlement-panel__hint {
+  margin: 0;
+  color: #667085;
+  text-align: center;
+  font-size: 13px;
 }
 
 .my-order-pager {

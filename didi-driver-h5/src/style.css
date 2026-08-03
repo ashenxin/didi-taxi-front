@@ -353,16 +353,8 @@ body {
   margin-top: 12px;
 }
 
-.trip-finish-field {
-  margin-top: 8px;
-}
-
 .trip-action-buttons {
   padding: 8px 16px 12px;
-}
-
-.trip-finish-btn {
-  margin-top: 10px;
 }
 
 /* Visual refresh */

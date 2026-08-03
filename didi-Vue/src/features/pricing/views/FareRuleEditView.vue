@@ -112,9 +112,9 @@
       </el-table-column>
       <el-table-column label="有效期" min-width="260">
         <template #default="{ row }">
-          <span>{{ row.validStartAt || '-' }}</span>
+          <span>{{ displayDateTime(row.validStartAt) }}</span>
           <span style="margin: 0 8px">~</span>
-          <span>{{ row.validEndAt || '-' }}</span>
+          <span>{{ displayDateTime(row.validEndAt) }}</span>
         </template>
       </el-table-column>
       <el-table-column label="状态" width="110">
@@ -302,6 +302,12 @@ function parseMaybeDateTime(value) {
   // 后端可能返回字符串（yyyy-MM-dd HH:mm:ss 或 ISO），这里尽量兼容
   const parsed = new Date(value)
   return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+function displayDateTime(value) {
+  if (!value) return '-'
+  const parsed = parseMaybeDateTime(value)
+  return parsed ? formatDateTime(parsed) : String(value).replace('T', ' ')
 }
 
 function money(value) {

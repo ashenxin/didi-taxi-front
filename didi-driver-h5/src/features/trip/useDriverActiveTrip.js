@@ -7,13 +7,12 @@ const POLL_MS = 2500
 /**
  * 接单后跟单：轮询 GET /driver/api/v1/orders/{orderNo}，推进 arrive / start / finish。
  */
-export function useDriverActiveTrip(driverId, { getJson, postJson, maybeDropToLogin, authed }) {
+export function useDriverActiveTrip(driverId, { getJson, postJsonIdempotent, maybeDropToLogin, authed }) {
   const activeTripOrderNo = ref('')
   const activeTrip = ref(null)
   const tripLoading = ref(false)
   const tripError = ref('')
   const tripActionLoading = ref(false)
-  const finishFinalAmount = ref('')
 
   let pollTimer = null
 
@@ -29,7 +28,6 @@ export function useDriverActiveTrip(driverId, { getJson, postJson, maybeDropToLo
     activeTripOrderNo.value = ''
     activeTrip.value = null
     tripError.value = ''
-    finishFinalAmount.value = ''
     try {
       sessionStorage.removeItem(STORAGE_KEY)
     } catch {
@@ -41,7 +39,6 @@ export function useDriverActiveTrip(driverId, { getJson, postJson, maybeDropToLo
     stopPollTimer()
     activeTripOrderNo.value = ''
     tripError.value = ''
-    finishFinalAmount.value = ''
     try {
       sessionStorage.removeItem(STORAGE_KEY)
     } catch {
@@ -82,7 +79,6 @@ export function useDriverActiveTrip(driverId, { getJson, postJson, maybeDropToLo
     if (!orderNo) return
     stopPollTimer()
     tripError.value = ''
-    finishFinalAmount.value = ''
     activeTripOrderNo.value = orderNo
     try {
       sessionStorage.setItem(STORAGE_KEY, orderNo)
@@ -104,7 +100,7 @@ export function useDriverActiveTrip(driverId, { getJson, postJson, maybeDropToLo
     tripActionLoading.value = true
     tripError.value = ''
     try {
-      await postJson(`/driver/api/v1/orders/${encodeURIComponent(no)}${pathSuffix}`, body)
+      await postJsonIdempotent(`/driver/api/v1/orders/${encodeURIComponent(no)}${pathSuffix}`, body)
       await fetchTripOnce()
       const rawStatus = activeTrip.value?.status
       const st = rawStatus == null ? null : Number(rawStatus)
@@ -131,13 +127,7 @@ export function useDriverActiveTrip(driverId, { getJson, postJson, maybeDropToLo
 
   async function finishTrip() {
     const id = driverId.value
-    const body = { driverId: id }
-    const raw = finishFinalAmount.value?.trim()
-    if (raw) {
-      const n = Number(raw)
-      if (!Number.isNaN(n)) body.finalAmount = n
-    }
-    await postTripAction('/finish', body)
+    await postTripAction('/finish', { driverId: id })
   }
 
   /**
@@ -150,7 +140,7 @@ export function useDriverActiveTrip(driverId, { getJson, postJson, maybeDropToLo
     tripActionLoading.value = true
     tripError.value = ''
     try {
-      await postJson(`/driver/api/v1/orders/${encodeURIComponent(no)}/cancel`, {
+      await postJsonIdempotent(`/driver/api/v1/orders/${encodeURIComponent(no)}/cancel`, {
         driverId: id,
         reasonCode,
       })
@@ -205,7 +195,6 @@ export function useDriverActiveTrip(driverId, { getJson, postJson, maybeDropToLo
     tripLoading,
     tripError,
     tripActionLoading,
-    finishFinalAmount,
     POLL_MS,
     beginFollowingOrder,
     dismissTripPanel,

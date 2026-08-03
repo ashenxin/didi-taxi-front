@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, unref, watch } from 'vue'
 import { showConfirmDialog, showToast } from 'vant'
 
-import { API_BASE_URL, getJson, getToken, postJson } from './api/http'
+import { API_BASE_URL, getJson, getToken, postJson, postJsonIdempotent } from './api/http'
 import { useAuth } from './features/auth/useAuth'
 import { useDriverActiveTrip } from './features/trip/useDriverActiveTrip'
 import { parseDriverIdFromToken } from './utils/jwt'
@@ -151,7 +151,7 @@ function isConflictError(e) {
 
 const trip = useDriverActiveTrip(driverId, {
   getJson,
-  postJson,
+  postJsonIdempotent,
   maybeDropToLogin,
   authed,
 })
@@ -781,7 +781,7 @@ async function acceptOrder(orderNo) {
   acceptLoading.value = orderNo
   assignedError.value = ''
   try {
-    await postJson(`/driver/api/v1/orders/${encodeURIComponent(orderNo)}/accept`, { driverId: id })
+    await postJsonIdempotent(`/driver/api/v1/orders/${encodeURIComponent(orderNo)}/accept`, { driverId: id })
     await loadAssigned(true)
     trip.beginFollowingOrder(orderNo)
     showToast({ type: 'success', message: '已接单' })
@@ -828,7 +828,7 @@ async function rejectOrder(orderNo) {
   rejectLoading.value = orderNo
   assignedError.value = ''
   try {
-    await postJson(`/driver/api/v1/orders/${encodeURIComponent(orderNo)}/reject`, {
+    await postJsonIdempotent(`/driver/api/v1/orders/${encodeURIComponent(orderNo)}/reject`, {
       driverId: id,
       reasonCode,
     })
@@ -1667,26 +1667,16 @@ async function logoutAll() {
                 >
                   {{ trip.tripActionLoading ? '提交中…' : '开始行程' }}
                 </van-button>
-                <template v-if="tripActionKey === 'finish'">
-                  <van-field
-                    v-model="trip.finishFinalAmount"
-                    class="trip-finish-field"
-                    label="实付"
-                    placeholder="可选，不填用预估"
-                    inputmode="decimal"
-                    autocomplete="off"
-                  />
-                  <van-button
-                    block
-                    round
-                    type="primary"
-                    class="trip-finish-btn"
-                    :loading="trip.tripActionLoading"
-                    @click="trip.finishTrip"
-                  >
-                    {{ trip.tripActionLoading ? '提交中…' : '行程结束' }}
-                  </van-button>
-                </template>
+                <van-button
+                  v-if="tripActionKey === 'finish'"
+                  block
+                  round
+                  type="primary"
+                  :loading="trip.tripActionLoading"
+                  @click="trip.finishTrip"
+                >
+                  {{ trip.tripActionLoading ? '提交中…' : '行程结束' }}
+                </van-button>
               </div>
               <van-notice-bar
                 v-else-if="activeTripStatusCode === 5"

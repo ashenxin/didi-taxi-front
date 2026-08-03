@@ -20,7 +20,7 @@ npm run build
 
 `npm test` 执行共享的前后端 API 契约检查；`npm run build` 会先自动执行同一检查，再进入 Vite 构建。
 
-三端都通过 `VITE_API_BASE_URL` 配置后端根地址，当前 `.env.development` 默认是 `http://127.0.0.1:18080`。后端文档中有些地方写的是网关 `8080`，以前端仓库当前环境文件为准。
+三端都通过 `VITE_API_BASE_URL` 配置后端根地址，当前 `.env.development` 默认是 `http://127.0.0.1:18080`。正常联调统一以该网关地址为准；`8080` 是当前本地 Nacos 3 控制台端口，不是业务网关。
 
 ## 后端契约摘要
 
@@ -88,6 +88,8 @@ npm run build
   - `/app/api/v1/orders/create` 保留为兼容入口，语义与主入口一致：只创建订单，派单异步推进；恢复真实下单时仍默认使用 `/app/api/v1/orders`
   - 订单详情：`GET /app/api/v1/orders/{orderNo}`
   - 乘客取消：`POST /app/api/v1/orders/{orderNo}/cancel`
+  - 结算详情：`GET /app/api/v1/orders/{orderNo}/settlement`
+  - 主动支付：`POST /app/api/v1/orders/{orderNo}/payments`，请求体只传 `channel`，并携带新的 `Idempotency-Key`
 - 乘客 WS：
   - `POST /app/api/v1/auth/ws-token`
   - `ws(s)://.../app/ws/v1/stream?token=...`

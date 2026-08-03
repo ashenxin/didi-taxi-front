@@ -3,6 +3,7 @@ const DEFAULT_TIMEOUT_MS = 15_000
 export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || DEFAULT_BASE_URL).replace(/\/$/, '')
 
 const TOKEN_KEY = 'didi_driver_token'
+const pendingIdempotencyKeys = new Map()
 
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY)
@@ -102,6 +103,50 @@ export async function postJson(path, body, options) {
     headers: { 'Content-Type': 'application/json', ...((options || {}).headers || {}) },
     body: JSON.stringify(body ?? {}),
   })
+}
+
+function createIdempotencyKey() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
+    const random = Math.floor(Math.random() * 16)
+    const value = char === 'x' ? random : (random & 0x3) | 0x8
+    return value.toString(16)
+  })
+}
+
+/**
+ * 订单写操作专用 POST：自动携带 Idempotency-Key。
+ *
+ * 同一路径和请求体在网络超时、断网等“结果未知”场景下复用同一个 key；
+ * 成功或收到服务端明确响应后结束本次尝试，下一次用户操作生成新 key。
+ */
+export async function postJsonIdempotent(path, body, options) {
+  const signature = `${path}\n${JSON.stringify(body ?? {})}`
+  let idempotencyKey = pendingIdempotencyKeys.get(signature)
+  if (!idempotencyKey) {
+    idempotencyKey = createIdempotencyKey()
+    pendingIdempotencyKeys.set(signature, idempotencyKey)
+  }
+
+  try {
+    const data = await postJson(path, body, {
+      ...(options || {}),
+      headers: {
+        ...((options || {}).headers || {}),
+        'Idempotency-Key': idempotencyKey,
+      },
+    })
+    pendingIdempotencyKeys.delete(signature)
+    return data
+  } catch (error) {
+    if (error?.httpStatus > 0) {
+      pendingIdempotencyKeys.delete(signature)
+    }
+    throw error
+  }
 }
 
 export async function putJson(path, body, options) {
