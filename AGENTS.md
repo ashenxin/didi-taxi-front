@@ -2,6 +2,12 @@
 
 本文档用于帮助后续维护者和 AI coding agent 快速理解 `didi-taxi-front` 三端前端项目。内容基于当前前端代码，以及同级后端仓库 `../didi-taxi` 中的 Markdown 文档整理。
 
+## 修改授权约定
+
+- 探索代码、读取配置、查询日志和其他只读排查可以直接进行。
+- 新增、编辑或删除代码、配置、SQL、测试及文档前，必须先向用户说明拟修改范围并获得明确确认；分析或排查请求本身不视为修改授权。
+- 用户明确回复“改”“执行”“确认”等内容后，只能在当次确认的范围内写入，不得扩展到尚未讨论的功能。
+
 ## 项目地图
 
 | 应用 | 目录 | 默认开发端口 | 技术栈 | 职责 |
@@ -68,8 +74,10 @@ npm run build
 - 首页中的许多按钮当前会调用 `showFeatureTodo(...)`，只提示“待开发”，不会触发下单。
 - 底部「我的」页已接入个人中心二期能力：
   - `我的订单`：调用 `/app/api/v1/orders` 分页展示订单。
-  - `设置`：调用 `/app/api/v1/settings/**` 展示资料、更换手机号、注销账号。
+  - `设置`：通过 `/app/api/v1/settings/profile` 展示资料，通过 `/app/api/v1/account-lifecycle/**` 更换手机号、注销及查询操作进度；生命周期已按约定范围验收通过。
   - `我的钱包`：调用 `/app/api/v1/wallet/**` 展示钱包摘要、免密支付设置和优惠券列表。
+  - `券包/登录领券`：已接入优惠券列表、可领取查询与领取；后台方案维护及后端锁券、释放、核销和结算接入均已完成本期范围。
+  - `福利`：已接入签到进度、签到与积分查询。
 - 叫车面板的主按钮已经绑定 `placeOrder`，真实下单、详情轮询兜底、取消订单、乘客 WS 跟单和退出登录均处于启用状态；其他尚未实现的视觉入口继续使用 `showFeatureTodo(...)`。
 
 恢复功能时需要保留的后端契约：
@@ -87,7 +95,7 @@ npm run build
     - 该入口现在是两段式主路径：HTTP 只保证创建 `CREATED` 订单，派单由后端 Outbox + Kafka + capacity 异步推进；前端通过 WS `ORDER_CHANGED` 或订单详情轮询感知 `PENDING_DRIVER_CONFIRM` / 后续状态。
   - `/app/api/v1/orders/create` 保留为兼容入口，语义与主入口一致：只创建订单，派单异步推进；恢复真实下单时仍默认使用 `/app/api/v1/orders`
   - 订单详情：`GET /app/api/v1/orders/{orderNo}`
-  - 乘客取消：`POST /app/api/v1/orders/{orderNo}/cancel`
+  - 乘客取消：`POST /app/api/v1/orders/{orderNo}/cancel`，必须携带 `Idempotency-Key`；同一次网络结果不确定的重试复用原 key。
   - 结算详情：`GET /app/api/v1/orders/{orderNo}/settlement`
   - 主动支付：`POST /app/api/v1/orders/{orderNo}/payments`，请求体只传 `channel`，并携带新的 `Idempotency-Key`
 - 乘客 WS：
@@ -150,6 +158,7 @@ npm run build
 - 接单、拒单、到达前取消、到达、开始行程、完成行程。
 - 司机 WS token 与 WS 指派推送，并有 HTTP 降级。
 - 首页工作台将“当前工作状态 / 接单操作 / 行程操作”压在同一张操作页中；不要再拆回三张长卡片。
+- 首页今日运营看板；成功接单后的行程记录、状态/日期筛选、稳定快照分页及逐次服务详情。
 - 司机换队申请与状态页。
 
 需要保留的后端契约：
@@ -171,6 +180,10 @@ npm run build
   - `POST /driver/api/v1/orders/{orderNo}/arrive`
   - `POST /driver/api/v1/orders/{orderNo}/start`
   - `POST /driver/api/v1/orders/{orderNo}/finish`
+- 行程历史与看板：
+  - `GET /driver/api/v1/profile/orders`
+  - `GET /driver/api/v1/profile/orders/{tripId}`
+  - `GET /driver/api/v1/dashboard/today`
 - WS：
   - `POST /driver/api/v1/auth/ws-token`
   - `ws(s)://.../driver/ws/v1/stream?token=...`
@@ -186,6 +199,8 @@ npm run build
 - 拒单和到达前取消会让乘客订单进入重新派单；拒单/取消原因不展示给乘客。
 - 当前司机退出登录会拒掉待确认指派、释放 `ACCEPTED` 已接未到订单并下线听单；`ARRIVED / STARTED` 等到达后或行程中订单不自动释放。
 - 提交换队申请后，司机在审核通过或撤销恢复前不可接单。
+- 行程历史从成功接单开始；拒单和确认超时不生成记录，接单后的乘客/司机/系统取消保留当次服务记录，改派后各司机记录相互隔离。
+- 今日运营按 `Asia/Shanghai` 自然日统计；金额只使用无人工处理标记的 `finalAmount`，不以预估金额补值，也不表述为司机收入。
 
 ## 管理后台说明
 
@@ -236,14 +251,14 @@ npm run build
 - 运力页面中，公司记录表示“公司 + 车队”，技术引用使用 `companyId`。
 - 换队审核拒绝必须填写原因；重复审核不应成功。
 
-## 乘客端静态首页的功能恢复策略
+## 乘客端首页的功能接入边界
 
-当前乘客首页是有意做成偏静态的视觉壳。恢复业务功能应分阶段进行：
+当前乘客首页保留高德风格视觉壳，主按钮下单、跟单、券包和福利签到已经接入业务。后续扩展遵守以下边界：
 
 1. 保留登录拦截和高德风格视觉壳。
-2. 先选择叫车面板中的单一主入口接回真实下单，例如目的地行或“现在出发”。
-3. 拿到 `orderNo` 后，在叫车面板内部或其上方重新展示订单跟踪面板。
-4. 其它服务入口、活动卡片、券包/福利等继续保持“待开发”，直到有明确后端契约。
+2. 保留叫车面板主按钮 `placeOrder` 作为当前真实下单入口。
+3. 拿到 `orderNo` 后，通过现有订单跟踪面板展示进度。
+4. 保留已经完成的券包、登录领券和福利签到能力；其他尚无业务实现的服务入口和活动卡片继续提示“待开发”。
 5. 订单跟踪优先使用乘客 WS `ORDER_CHANGED` 触发 HTTP 详情刷新；WS 不可用时保留 HTTP 轮询兜底。
 6. WS 只作为“订单变化提醒”，不作为订单状态权威。
 

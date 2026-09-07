@@ -5,6 +5,9 @@ import { showConfirmDialog, showToast } from 'vant'
 import { API_BASE_URL, getJson, getToken, postJson, postJsonIdempotent } from './api/http'
 import { useAuth } from './features/auth/useAuth'
 import { useDriverActiveTrip } from './features/trip/useDriverActiveTrip'
+import DriverTripHistory from './features/history/DriverTripHistory.vue'
+import DriverTodayDashboard from './features/history/DriverTodayDashboard.vue'
+import './features/history/history.css'
 import { parseDriverIdFromToken } from './utils/jwt'
 import { formatAssignedItemStatus, isPendingAssignListStatus } from './utils/orderStatus'
 import { getCurrentLatLng } from './utils/geolocation'
@@ -89,7 +92,25 @@ const reasonSheetActions = DRIVER_REASON_SHEET.map((r) => ({ name: r.name, code:
 let wsConn = null
 
 const pageTitle = computed(() => (authed.value ? '司机工作台' : '司机登录'))
-const view = ref('home') // home | teamChangeApply | teamChangeStatus
+const view = ref('home') // home | history | teamChangeApply | teamChangeStatus
+const historyFilter = ref({})
+const historyTripId = ref('')
+const tripRefreshVersion = ref(0)
+function openTripHistory(filter = {}) {
+  historyFilter.value = filter
+  historyTripId.value = ''
+  view.value = 'history'
+  requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'auto' }))
+}
+function openHistoryTrip(id) {
+  historyFilter.value = {}
+  historyTripId.value = String(id)
+  view.value = 'history'
+  requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'auto' }))
+}
+watch(authed, value => {
+  if (!value) { view.value = 'home'; historyFilter.value = {}; historyTripId.value = '' }
+})
 
 const driverId = computed(() => parseDriverIdFromToken(getToken()))
 
@@ -156,6 +177,8 @@ const trip = useDriverActiveTrip(driverId, {
   authed,
 })
 
+watch(() => [unref(trip.activeTrip)?.orderNo, unref(trip.activeTrip)?.status], () => { tripRefreshVersion.value++ })
+
 /** 订单行：reactive 内嵌 ref，脚本里用 unref 与模板一致 */
 function tripRow() {
   return unref(trip.activeTrip)
@@ -203,6 +226,10 @@ const acceptabilityText = computed(() => {
 })
 
 const assignedCount = computed(() => assigned.value?.length || 0)
+const hasTripPanel = computed(() => Boolean(trip.activeTripOrderNo || trip.activeTrip))
+const activeTripIsTerminal = computed(() => activeTripStatusCode.value === 5 || activeTripStatusCode.value === 6)
+const showAssignedWorkspace = computed(() => !hasTripPanel.value || (activeTripIsTerminal.value && assignedCount.value > 0))
+const terminalTripSummary = computed(() => activeTripStatusCode.value === 5 ? '上一单已完成' : '上一单已取消')
 
 const realtimeConnectionText = computed(() => {
   if (wsConnected.value) return '已连接'
@@ -1192,40 +1219,12 @@ async function logoutAll() {
         </div>
       </div>
 
-      <div class="driver-quick-actions">
-        <van-button
-          type="primary"
-          round
-          :loading="onlineLoading"
-          :disabled="monitorStatusLoading || onlineLoading || monitorStatus === 2"
-          @click="setOnline(true)"
-        >
-          {{ onlineLoading ? '处理中...' : monitorStatus === 1 ? '刷新位置' : '上线听单' }}
-        </van-button>
-        <van-button
-          type="warning"
-          round
-          plain
-          :loading="onlineLoading"
-          :disabled="monitorStatusLoading || isMonitorOffline"
-          @click="setOnline(false)"
-        >
-          下线
-        </van-button>
-        <button
-          type="button"
-          class="refresh-assigned-btn"
-          :disabled="assignedLoading"
-          @click="onRefreshAssigned"
-          @touchend.prevent="onRefreshAssigned"
-        >
-          {{ assignedLoading ? '刷新中' : '刷新指派单' }}
-        </button>
-        <van-button round plain hairline type="danger" @click="logoutAll">退出登录</van-button>
-      </div>
-
       <main class="page-main">
-          <template v-if="view !== 'home'">
+          <template v-if="view === 'history'">
+            <button class="history-workbench-link" @click="backToHome">返回工作台 · {{ assigned.length ? assigned.length + ' 笔待确认' : workStateTitle }}</button>
+            <DriverTripHistory :initial-filter="historyFilter" :initial-trip-id="historyTripId" :refresh-version="tripRefreshVersion" @back="backToHome" @auth-error="maybeDropToLogin" />
+          </template>
+          <template v-else-if="view !== 'home'">
             <van-cell-group inset :title="view === 'teamChangeApply' ? '更换车队' : '换队申请状态'" class="section-gap">
               <van-cell>
                 <template #title>
@@ -1411,7 +1410,10 @@ async function logoutAll() {
                   <div class="driver-state-card__eyebrow">当前工作状态</div>
                   <h1 class="driver-state-card__title">{{ workStateTitle }}</h1>
                 </div>
-                <van-tag :type="workStateTagType" size="medium" plain>{{ monitorStatusText }}</van-tag>
+                <div class="driver-state-card__controls">
+                  <van-tag :type="workStateTagType" size="medium" plain>{{ monitorStatusText }}</van-tag>
+                  <van-button size="small" plain hairline type="danger" @click="logoutAll">退出</van-button>
+                </div>
               </div>
               <p class="driver-state-card__hint">{{ workStateHint }}</p>
               <div class="driver-state-grid">
@@ -1448,6 +1450,17 @@ async function logoutAll() {
                 >
                   下线
                 </van-button>
+                <van-button
+                  class="driver-state-actions__refresh"
+                  plain
+                  block
+                  type="primary"
+                  :loading="assignedLoading"
+                  :disabled="assignedLoading"
+                  @click="onRefreshAssigned"
+                >
+                  {{ assignedLoading ? '刷新中' : '刷新指派' }}
+                </van-button>
               </div>
             </div>
 
@@ -1462,21 +1475,16 @@ async function logoutAll() {
               class="section-gap"
             />
 
-            <section class="driver-section section-gap">
+            <section v-if="showAssignedWorkspace" class="driver-section section-gap order-workspace">
               <div class="driver-section__head">
                 <div>
-                  <div class="driver-section__label">接单操作</div>
+                  <div class="driver-section__label">订单处理</div>
                   <h2>乘客指派单</h2>
                 </div>
-                <button
-                  type="button"
-                  class="driver-refresh-btn"
-                  :disabled="assignedLoading"
-                  @click="onRefreshAssigned"
-                  @touchend.prevent="onRefreshAssigned"
-                >
-                  {{ assignedLoading ? '刷新中' : '刷新' }}
-                </button>
+              </div>
+              <div v-if="activeTripIsTerminal && assignedCount > 0" class="driver-terminal-summary">
+                <span>{{ terminalTripSummary }}，新的指派单已到达</span>
+                <button type="button" @click="trip.dismissTripPanel">关闭上一单</button>
               </div>
               <van-notice-bar
                 v-if="assigned.length > 1"
@@ -1562,10 +1570,10 @@ async function logoutAll() {
               />
             </section>
 
-          <section v-if="trip.activeTripOrderNo || trip.activeTrip" class="driver-section section-gap trip-panel">
+          <section v-else class="driver-section section-gap trip-panel order-workspace">
             <div class="driver-section__head">
               <div>
-                <div class="driver-section__label">行程操作</div>
+                <div class="driver-section__label">订单处理</div>
                 <h2>当前行程</h2>
               </div>
               <van-button size="small" plain hairline type="primary" @click="trip.dismissTripPanel">
@@ -1708,10 +1716,14 @@ async function logoutAll() {
             </van-cell-group>
           </section>
 
+          </section>
+
+          <DriverTodayDashboard :refresh-version="tripRefreshVersion" @open-history="openTripHistory" @open-trip="openHistoryTrip" @auth-error="maybeDropToLogin" />
+
           <van-cell-group inset title="更多功能入口" class="section-gap entry-grid">
             <van-grid :column-num="3" :border="false" clickable>
               <van-grid-item icon="balance-o" text="钱包（待开发）" @click="openTodo('钱包')" />
-              <van-grid-item icon="records-o" text="行程记录（待开发）" @click="openTodo('行程记录')" />
+              <van-grid-item icon="records-o" text="行程记录" @click="openTripHistory()" />
               <van-grid-item icon="like-o" text="服务分（待开发）" @click="openTodo('服务分')" />
               <van-grid-item icon="setting-o" text="设置（待开发）" @click="openTodo('设置')" />
             </van-grid>
@@ -1742,7 +1754,6 @@ async function logoutAll() {
               </template>
             </van-cell>
           </van-cell-group>
-          </section>
           </template>
 
           <van-cell-group inset title="WebSocket（可选）" class="section-gap">

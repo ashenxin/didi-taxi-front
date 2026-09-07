@@ -25,6 +25,9 @@ const contracts = [
   ['POST', '/app/api/v1/wallet/coupons/claim', 'didi-passenger-h5', '/app/api/v1/wallet/coupons/claim'],
   ['POST', '/app/api/v1/benefits/sign-in', 'didi-passenger-h5', '/app/api/v1/benefits/sign-in'],
 
+  ['GET', '/driver/api/v1/profile/orders', 'didi-driver-h5', '/driver/api/v1/profile/orders?'],
+  ['GET', '/driver/api/v1/profile/orders/{tripId}', 'didi-driver-h5', '/driver/api/v1/profile/orders/${encodeURIComponent(id)}'],
+  ['GET', '/driver/api/v1/dashboard/today', 'didi-driver-h5', '/driver/api/v1/dashboard/today'],
   ['POST', '/driver/api/v1/auth/login-sms', 'didi-driver-h5', '/driver/api/v1/auth/login-sms'],
   ['POST', '/driver/api/v1/drivers/{driverId}/online', 'didi-driver-h5', '/online`'],
   ['POST', '/driver/api/v1/drivers/{driverId}/heartbeat', 'didi-driver-h5', '/heartbeat`'],
@@ -96,6 +99,11 @@ if (/VITE_DRIVER_WS_BASE_URL\s*=\s*ws:\/\/127\.0\.0\.1:8101/.test(driverEnv)) {
 }
 if (!appSources.get('didi-passenger-h5').includes('@click="placeOrder"')) {
   errors.push('乘客首页没有绑定真实下单入口 @click="placeOrder"')
+}
+if (!/\/orders\/\$\{encodeURIComponent\(no\)\}\/cancel`[\s\S]{0,500}'Idempotency-Key'/.test(
+  appSources.get('didi-passenger-h5'),
+)) {
+  errors.push('乘客取消订单请求缺少 Idempotency-Key')
 }
 
 if (errors.length) {

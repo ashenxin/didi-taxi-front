@@ -58,6 +58,7 @@ const lastRequest = ref(null)
 const lastResponse = ref(null)
 const lastError = ref(null)
 let pendingCreateOrderAttempt = null
+let pendingCancelOrderAttempt = null
 
 const trackingOrderNo = ref('')
 const liveOrderDetail = ref(null)
@@ -839,13 +840,25 @@ async function cancelOrder() {
     return
   }
   cancelLoading.value = true
+  const reason = cancelReason.value?.trim() || '乘客取消'
+  const requestFingerprint = JSON.stringify({ orderNo: no, cancelReason: reason })
+  if (!pendingCancelOrderAttempt || pendingCancelOrderAttempt.requestFingerprint !== requestFingerprint) {
+    pendingCancelOrderAttempt = {
+      key: createIdempotencyKey(),
+      requestFingerprint,
+    }
+  }
   try {
     await postJson(`/app/api/v1/orders/${encodeURIComponent(no)}/cancel`, {
-      cancelReason: cancelReason.value?.trim() || '乘客取消',
+      cancelReason: reason,
+    }, {
+      headers: { 'Idempotency-Key': pendingCancelOrderAttempt.key },
     })
+    pendingCancelOrderAttempt = null
     dismissOrderCard()
     showToast({ type: 'success', message: '已提交取消' })
   } catch (e) {
+    if (e?.httpStatus > 0) pendingCancelOrderAttempt = null
     maybeDropToLogin(e)
     showToast({ type: 'fail', message: e?.message || String(e) })
   } finally {
