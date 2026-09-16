@@ -1,300 +1,72 @@
 # AGENTS.md
 
-本文档用于帮助后续维护者和 AI coding agent 快速理解 `didi-taxi-front` 三端前端项目。内容基于当前前端代码，以及同级后端仓库 `../didi-taxi` 中的 Markdown 文档整理。
+本文档维护前端技术栈、项目结构、修改授权和开发协作方式。三端功能、业务规则和后端契约统一维护在 `README.md`。
+
+## 前端项目
+
+- 本项目为 Vue 3 + JavaScript 前端应用，包含乘客端 H5、司机端 H5 和管理后台三个独立应用。
+- 包管理工具：npm。
+- 构建工具：Vite 6。
+- H5 UI 组件库：Vant 4。
+- 管理后台 UI 组件库：Element Plus 2。
+- 路由管理：Vue Router 4。
+- 组件开发方式：Vue 单文件组件 + 原生 CSS，当前未使用 TypeScript。
+- 接口与实时通信：HTTP API + 原生 WebSocket。
+- 环境配置：通过 `VITE_API_BASE_URL` 配置后端网关地址。
+- 质量检查：使用共享 Node.js 脚本检查前后端 API 契约，并在 Vite 构建前自动执行。
+
+## 项目结构
+
+```text
+didi-taxi-front/
+├── didi-passenger-h5/       # 乘客端 H5
+│   ├── public/              # 静态资源
+│   └── src/
+│       ├── api/             # HTTP 请求封装
+│       ├── assets/          # 页面资源
+│       ├── components/      # 通用组件
+│       ├── features/        # 按功能拆分的代码
+│       └── utils/           # 状态、WebSocket 等工具
+├── didi-driver-h5/          # 司机端 H5
+│   ├── public/              # 静态资源
+│   └── src/
+│       ├── api/             # HTTP 请求封装
+│       ├── assets/          # 页面资源
+│       ├── components/      # 通用组件
+│       ├── features/        # 按功能拆分的代码
+│       └── utils/           # 订单状态、定位等工具
+├── didi-Vue/                # 管理后台
+│   ├── public/              # 静态资源
+│   └── src/
+│       ├── api/             # HTTP 请求封装
+│       ├── components/      # 通用组件
+│       ├── composables/     # 组合式逻辑
+│       ├── features/        # 按功能拆分的代码
+│       ├── layouts/         # 布局组件
+│       ├── router/          # 路由与动态路由
+│       ├── stores/          # 前端状态
+│       ├── utils/           # 工具函数
+│       └── views/           # 页面组件
+└── scripts/                 # 三端共享的检查脚本
+```
 
 ## 修改授权约定
 
 - 探索代码、读取配置、查询日志和其他只读排查可以直接进行。
-- 新增、编辑或删除代码、配置、SQL、测试及文档前，必须先向用户说明拟修改范围并获得明确确认；分析或排查请求本身不视为修改授权。
-- 用户明确回复“改”“执行”“确认”等内容后，只能在当次确认的范围内写入，不得扩展到尚未讨论的功能。
+- 新增、编辑或删除代码、配置、测试及文档前，必须先说明拟修改范围并获得用户明确确认；分析或排查请求本身不视为修改授权。
+- 用户确认后，只能在当次确认的范围内写入，不得扩展到尚未讨论的应用或功能。
 
-## 项目地图
+## 开发约定
 
-| 应用 | 目录 | 默认开发端口 | 技术栈 | 职责 |
-|---|---|---:|---|---|
-| 乘客端 H5 | `didi-passenger-h5` | 5173 | Vue 3 + Vite + Vant | 乘客登录、首页、下单/跟单、取消、退出登录、我的订单、设置、我的钱包、乘客 WS 降级。 |
-| 司机端 H5 | `didi-driver-h5` | 5174 | Vue 3 + Vite + Vant | 司机登录/注册、上线/下线听单、指派单、接单/拒单/取消、行程推进、司机 WS 推送、换队流程。 |
-| 管理后台 | `didi-Vue` | 5175 | Vue 3 + Vite + Element Plus + Vue Router | 后台登录、动态菜单、订单管理、运力配置、计价管理、换队审核、系统用户。 |
-
-每个应用都在自己的目录中启动或构建：
-
-```bash
-npm run dev
-npm test
-npm run build
-```
-
-`npm test` 执行共享的前后端 API 契约检查；`npm run build` 会先自动执行同一检查，再进入 Vite 构建。
-
-三端都通过 `VITE_API_BASE_URL` 配置后端根地址，当前 `.env.development` 默认是 `http://127.0.0.1:18080`。正常联调统一以该网关地址为准；`8080` 是当前本地 Nacos 3 控制台端口，不是业务网关。
-
-## 后端契约摘要
-
-后端是 Java/Spring 多模块项目。正常业务请求必须统一经过网关，再进入三端 API 聚合服务（`admin-api` / `passenger-api` / `driver-api`），绝不能让前端、联调脚本或排查建议直连核心服务（如 `order-service`、`capacity-service`、`passenger` 内部服务等）。只有在用户明确说明“排障直连核心服务”时，才可以临时直连，并且要在回复中标明这是非正常流程。
-
-浏览器/H5 流量入口：
-
-| 前端 | 网关前缀 | BFF | 后端权威来源 |
-|---|---|---|---|
-| 管理后台 | `/admin/**` | `admin-api` | `admin-api` + `passenger sys_*` 负责鉴权和数据域 |
-| 乘客端 | `/app/**` | `passenger-api` | `order-service` 负责订单状态 |
-| 司机端 | `/driver/**` | `driver-api` | `order-service` 负责订单状态，`capacity-service` 负责运力状态 |
-
-乘客钱包相关的后端边界：
-
-- 前端只访问 `passenger-api` 暴露的 `/app/api/v1/wallet/**`。
-- `wallet-service` 维护免密支付协议和支付单，默认端口 8095。
-- `calculate-service` 维护优惠券模板、用户券和用券流水。
-- `order-service` 维护 `trip_order_settlement` 订单结算快照。
-- 银行卡、借钱、车险当前只保留入口，不接真实业务接口。
-
-后端文档中的关键规则：
-
-- 网关校验 JWT 签名、过期时间和 audience，并注入可信 `X-User-Id`；前端不能依赖自己伪造或手动传入的身份头。
-- BFF 只做端侧聚合、身份校验和编排，不替代 `order-service` 做订单状态裁决。
-- `order-service` 是订单状态流转的权威来源，关键写操作依赖状态条件更新/CAS。
-- `capacity-service` 负责司机听单状态、Redis GEO 司机池、候选司机、司机公司/车队与换队数据。
-- Redis 是索引、缓存、推送辅助，不是业务权威数据源。
-- 前端倒计时、静态文案、按钮状态都不能作为超时、取消、接单资格或订单终态的权威依据。
-
-## 乘客端 H5 说明
-
-主要文件：
-
-- `didi-passenger-h5/src/App.vue`
-- `didi-passenger-h5/src/style.css`
-- `didi-passenger-h5/src/api/http.js`
-- `didi-passenger-h5/src/utils/orderStatus.js`
-- `didi-passenger-h5/src/utils/passengerOrderWs.js`
-
-当前状态：
-
-- 登录页仍然使用真实乘客鉴权接口。
-- 登录后的首页已经大幅改造成偏静态的高德风格地图页，包含可拖动/滚动的叫车面板和底部导航。
-- 首页中的许多按钮当前会调用 `showFeatureTodo(...)`，只提示“待开发”，不会触发下单。
-- 底部「我的」页已接入个人中心二期能力：
-  - `我的订单`：调用 `/app/api/v1/orders` 分页展示订单。
-  - `设置`：通过 `/app/api/v1/settings/profile` 展示资料，通过 `/app/api/v1/account-lifecycle/**` 更换手机号、注销及查询操作进度；生命周期已按约定范围验收通过。
-  - `我的钱包`：调用 `/app/api/v1/wallet/**` 展示钱包摘要、免密支付设置和优惠券列表。
-  - `券包/登录领券`：已接入优惠券列表、可领取查询与领取；后台方案维护及后端锁券、释放、核销和结算接入均已完成本期范围。
-  - `福利`：已接入签到进度、签到与积分查询。
-- 叫车面板的主按钮已经绑定 `placeOrder`，真实下单、详情轮询兜底、取消订单、乘客 WS 跟单和退出登录均处于启用状态；其他尚未实现的视觉入口继续使用 `showFeatureTodo(...)`。
-
-恢复功能时需要保留的后端契约：
-
-- 登录：
-  - `POST /app/api/v1/auth/sms/send`
-  - `POST /app/api/v1/auth/login-sms`
-  - `POST /app/api/v1/auth/login-password`
-  - `POST /app/api/v1/auth/logout`
-- 订单：
-  - 当前 H5/MVP 推荐一步下单：`POST /app/api/v1/orders`
-    - 必须带 `Authorization: Bearer <accessToken>` 与 `Idempotency-Key: <uuid>`。
-    - `Idempotency-Key` 在用户一次真实下单点击时生成；同一次网络重试复用同一个 key，新下单意图必须生成新 key。
-    - 后端缺少 `Idempotency-Key` 返回 400；同 key、不同下单内容返回 409；同 key、同内容重复提交返回同一 `orderNo`。
-    - 该入口现在是两段式主路径：HTTP 只保证创建 `CREATED` 订单，派单由后端 Outbox + Kafka + capacity 异步推进；前端通过 WS `ORDER_CHANGED` 或订单详情轮询感知 `PENDING_DRIVER_CONFIRM` / 后续状态。
-  - `/app/api/v1/orders/create` 保留为兼容入口，语义与主入口一致：只创建订单，派单异步推进；恢复真实下单时仍默认使用 `/app/api/v1/orders`
-  - 订单详情：`GET /app/api/v1/orders/{orderNo}`
-  - 乘客取消：`POST /app/api/v1/orders/{orderNo}/cancel`，必须携带 `Idempotency-Key`；同一次网络结果不确定的重试复用原 key。
-  - 结算详情：`GET /app/api/v1/orders/{orderNo}/settlement`
-  - 主动支付：`POST /app/api/v1/orders/{orderNo}/payments`，请求体只传 `channel`，并携带新的 `Idempotency-Key`
-- 乘客 WS：
-  - `POST /app/api/v1/auth/ws-token`
-  - `ws(s)://.../app/ws/v1/stream?token=...`
-  - WS 只作为“订单变化提醒”的实时通道，收到 `ORDER_CHANGED` 后拉一次 HTTP 订单详情；HTTP 详情仍然是展示权威。
-  - 稳态不做常驻短轮询；WS 失败或不可用时才进入 HTTP 详情轮询兜底。
-- 个人中心：
-  - `GET /app/api/v1/orders?type=&pageNo=&pageSize=`
-  - `GET /app/api/v1/settings/profile`
-  - `POST /app/api/v1/account-lifecycle/phone-changes/sms/send`
-  - `POST /app/api/v1/account-lifecycle/phone-changes`
-  - `POST /app/api/v1/account-lifecycle/cancellations/precheck`
-  - `POST /app/api/v1/account-lifecycle/cancellations/sms/send`
-  - `POST /app/api/v1/account-lifecycle/cancellations`
-  - `GET /app/api/v1/account-lifecycle/operations/{operationNo}`
-  - `POST /app/api/v1/account-lifecycle/operations/{operationNo}/abort`
-  - `POST /app/api/v1/account-lifecycle/operations/{operationNo}/recheck`
-  - 换号和注销提交必须携带 `Idempotency-Key`，并把短信响应中的
-    `lifecycleVersion` 作为 `expectedLifecycleVersion` 原样提交。
-  - 注销返回 HTTP 202 只表示已受理；H5 必须保存受限 token 和 `operationNo`，
-    直到 Operation 进入 `COMPLETED` 或 `ABORTED`，不能提前提示注销完成。
-- 钱包：
-  - `GET /app/api/v1/wallet/summary`
-  - `GET /app/api/v1/wallet/auto-pay/agreements`
-  - `POST /app/api/v1/wallet/auto-pay/agreements/sign`
-  - `POST /app/api/v1/wallet/auto-pay/agreements/{agreementId}/default`
-  - `POST /app/api/v1/wallet/auto-pay/agreements/{agreementId}/close`
-  - `GET /app/api/v1/wallet/coupons`
-  - `GET /app/api/v1/wallet/coupons/available`
-
-乘客端产品/状态规则：
-
-- 等待态包含 `CREATED`、`ASSIGNED`、`PENDING_DRIVER_CONFIRM` 以及重新派单中。
-- 等待态下乘客可以取消订单。
-- 后端按 `createdAt` 累计等待 3 分钟仍无司机接单时系统取消订单；前端应展示后端返回的 `cancelBy` / `cancelReason`，并在取消态结束跟单回到未下单首页。
-- `reDispatching=true` 表示应展示“正在重新派单”或等价文案；来源包括司机拒单、到达前取消、司机 30s 确认窗口超时释放指派。确认窗超时不写司机-乘客隔离键，下一轮仍可再次派给同一司机。
-- 不要把所有静态视觉按钮都接到 `placeOrder`；当前唯一真实下单入口是叫车面板主按钮，其他入口应在各自功能完成后再启用。
-- 我的钱包页面入口顺序固定为：免密支付设置、银行卡、优惠券、借钱、车险；其中银行卡、借钱、车险点击后只提示待开发。
-- 钱包摘要中可用优惠券数量为空或未加载时展示 `0 张`，不要展示 `- 张`。
-- 免密支付本期只支持支付宝/微信，允许同时开通，但只能有一个默认渠道。
-
-## 司机端 H5 说明
-
-主要文件：
-
-- `didi-driver-h5/src/App.vue`
-- `didi-driver-h5/src/style.css`
-- `didi-driver-h5/src/api/http.js`
-- `didi-driver-h5/src/utils/orderStatus.js`
-- `didi-driver-h5/src/utils/tripStatus.js`
-- `didi-driver-h5/src/utils/geolocation.js`
-
-当前已实现能力：
-
-- 短信或密码登录/注册。
-- 通过 `/driver/api/v1/drivers/{driverId}/online` 上线/下线听单。
-- 听单期间约每 15 秒调用 `/driver/api/v1/drivers/{driverId}/heartbeat`，定位成功时更新 GEO，定位失败时仍续 Presence。
-- 通过 `/driver/api/v1/orders/assigned` 拉取指派单列表。
-- 接单、拒单、到达前取消、到达、开始行程、完成行程。
-- 司机 WS token 与 WS 指派推送，并有 HTTP 降级。
-- 首页工作台将“当前工作状态 / 接单操作 / 行程操作”压在同一张操作页中；不要再拆回三张长卡片。
-- 首页今日运营看板；成功接单后的行程记录、状态/日期筛选、稳定快照分页及逐次服务详情。
-- 司机换队申请与状态页。
-
-需要保留的后端契约：
-
-- 鉴权：
-  - `POST /driver/api/v1/auth/sms/send`
-  - `POST /driver/api/v1/auth/register-sms`
-  - `POST /driver/api/v1/auth/register-password`
-  - `POST /driver/api/v1/auth/login-sms`
-  - `POST /driver/api/v1/auth/login-password`
-  - `POST /driver/api/v1/auth/logout`
-- 听单与订单：
-  - `POST /driver/api/v1/drivers/{driverId}/online`
-  - `POST /driver/api/v1/drivers/{driverId}/heartbeat`
-  - `GET /driver/api/v1/orders/assigned`
-  - `POST /driver/api/v1/orders/{orderNo}/accept`
-  - `POST /driver/api/v1/orders/{orderNo}/reject`
-  - `POST /driver/api/v1/orders/{orderNo}/cancel`
-  - `POST /driver/api/v1/orders/{orderNo}/arrive`
-  - `POST /driver/api/v1/orders/{orderNo}/start`
-  - `POST /driver/api/v1/orders/{orderNo}/finish`
-- 行程历史与看板：
-  - `GET /driver/api/v1/profile/orders`
-  - `GET /driver/api/v1/profile/orders/{tripId}`
-  - `GET /driver/api/v1/dashboard/today`
-- WS：
-  - `POST /driver/api/v1/auth/ws-token`
-  - `ws(s)://.../driver/ws/v1/stream?token=...`
-
-司机端业务规则：
-
-- 司机允许登录，不代表允许接单；上线听单和接单必须由后端校验接单资格。
-- 接单资格展示优先使用 `/driver/api/v1/team-change/belonging` 的 `canAcceptOrder`；无归属数据时用听单状态兜底（未听单/听单中显示可接单，服务中显示服务中）。
-- `ASSIGNED` 和 `PENDING_DRIVER_CONFIRM` 都属于待确认指派列表状态。
-- 待确认指派不应固定每 2s 走 HTTP 自动刷新；WS 正常时由 WS 推送更新，HTTP 只用于首次加载、上线/关键操作后对账和手动刷新。
-- 司机 30s 内未确认待接指派时，后端释放本轮指派，订单回到 `CREATED` 并重新派单；司机端待确认列表应通过 WS/对账消失。该超时不等同主动拒单，不触发 30 分钟司机-乘客隔离。
-- 司机接成一单后，同司机其它待确认指派可能会被释放并重新派单。
-- 拒单和到达前取消会让乘客订单进入重新派单；拒单/取消原因不展示给乘客。
-- 当前司机退出登录会拒掉待确认指派、释放 `ACCEPTED` 已接未到订单并下线听单；`ARRIVED / STARTED` 等到达后或行程中订单不自动释放。
-- 提交换队申请后，司机在审核通过或撤销恢复前不可接单。
-- 行程历史从成功接单开始；拒单和确认超时不生成记录，接单后的乘客/司机/系统取消保留当次服务记录，改派后各司机记录相互隔离。
-- 今日运营按 `Asia/Shanghai` 自然日统计；金额只使用无人工处理标记的 `finalAmount`，不以预估金额补值，也不表述为司机收入。
-
-## 管理后台说明
-
-主要文件：
-
-- `didi-Vue/src/api/http.js`
-- `didi-Vue/src/router/index.js`
-- `didi-Vue/src/router/dynamicRoutes.js`
-- `didi-Vue/src/router/adminViewRegistry.js`
-- `didi-Vue/src/stores/adminSession.js`
-- `didi-Vue/src/features/**`
-
-当前结构：
-
-- 根路由加载 `AdminShellLayout`。
-- 登录页是 `/login`。
-- 登录后根据后端菜单动态注册路由；组件加载由 `ADMIN_VIEW_REGISTRY` 白名单限制。
-- 401 会清理后台 token 并跳转登录。
-
-需要保留的管理端契约：
-
-- 鉴权/菜单：
-  - `POST /admin/api/v1/auth/login`
-  - `GET /admin/api/v1/auth/me`
-  - `GET /admin/api/v1/auth/menus`
-- 订单：
-  - `GET /admin/api/v1/orders`
-  - `GET /admin/api/v1/orders/{orderNo}`
-- 运力：
-  - `/admin/api/v1/capacity/companies`
-  - `/admin/api/v1/capacity/drivers`
-  - `/admin/api/v1/capacity/cars`
-  - `/admin/api/v1/capacity/team-change-requests`
-- 计价：
-  - `/admin/api/v1/pricing/fare-rules`
-- 钱包/优惠券：
-  - 乘客钱包在乘客端展示；车队营销优惠券后台能力已经接入计价规则编辑页。
-  - 后台已从计价规则详情页接入优惠券方案列表、创建、编辑、发布和下架，路径为 `/admin/api/v1/pricing/fare-rules/{id}/coupons/**`。
-- 系统用户：
-  - `/admin/api/v1/system/admin-users`
-
-管理端业务规则：
-
-- 菜单决定能不能进入页面，数据域决定能看到哪些数据。
-- 非 SUPER 用户有省/市数据域限制。越权筛选返回 403，越权资源返回 404。
-- 订单列表不要逐行补乘客手机号，避免 N+1；乘客手机号只应在详情中展示。
-- 计价规则需要遵守公司 + 省 + 市 + 产品线维度，以及有效期不重叠规则。
-- 运力页面中，公司记录表示“公司 + 车队”，技术引用使用 `companyId`。
-- 换队审核拒绝必须填写原因；重复审核不应成功。
-
-## 乘客端首页的功能接入边界
-
-当前乘客首页保留高德风格视觉壳，主按钮下单、跟单、券包和福利签到已经接入业务。后续扩展遵守以下边界：
-
-1. 保留登录拦截和高德风格视觉壳。
-2. 保留叫车面板主按钮 `placeOrder` 作为当前真实下单入口。
-3. 拿到 `orderNo` 后，通过现有订单跟踪面板展示进度。
-4. 保留已经完成的券包、登录领券和福利签到能力；其他尚无业务实现的服务入口和活动卡片继续提示“待开发”。
-5. 订单跟踪优先使用乘客 WS `ORDER_CHANGED` 触发 HTTP 详情刷新；WS 不可用时保留 HTTP 轮询兜底。
-6. WS 只作为“订单变化提醒”，不作为订单状态权威。
-
-需要避免的问题：
-
-- 不要让静态 Tab 或占位页把进行中订单完全藏起来，必须能回到跟单状态。
-- 不要让每个视觉卡片都触发下单。
-- 不要根据前端倒计时推断订单终态。
-- 不要删除旧订单函数，除非替代逻辑已经上线并通过验证。
-
-## 开发检查清单
-
-改代码前：
-
-- 确认变更属于乘客端、司机端还是管理后台。
-- 判断该功能当前是纯视觉占位，还是已经接了真实 API。
-- 如果要改接口契约，先阅读 `../didi-taxi` 中对应后端文档。
-
-改代码后：
-
-- 在每个被修改的前端应用目录执行 `npm test` 和 `npm run build`；构建前会再次校验关键前端调用是否仍有对应后端 Controller。
-- 乘客/司机订单相关改动至少手动验证登录、主操作、错误态和退出登录。
-- 管理后台改动至少验证菜单路由注册、401 跳转、一个带数据域的列表查询。
-- 除非明确为了排障直连 BFF，否则 `VITE_API_BASE_URL` 应保持走网关。
-
-## 已阅读的后端文档
-
-上述前端约束来自当前 `../didi-taxi` 仓库中的所有 Markdown 文档，包括：
-
-- `AGENTS.md`、`README.md`、`TODO与差距总览.md`
-- 乘客/司机 MVP 文档：`第一期MVP_乘客派单司机闭环_*`、`乘客司机端_最小闭环接口调用文档.md`、`乘客司机端_Redis与听单下线策略.md`
-- 登录文档：`乘客端_登录_*`、`司机端_登录注册_*`
-- 实时与网关文档：`乘客端与司机端_WebSocket_对比.md`、`司机端_WebSocket与实时协议入门.md`、`司机端_上线听单与接单设计.md`、`网关服务_设计.md`、`网关服务_技术.md`
-- 订单与派单文档：`订单与派单_订单服务幂等与并发方案说明.md`、`订单与派单_两段式Outbox与Kafka_技术方案.md`
-- 管理后台文档：`后台管理系统_权限*`、`后台管理系统_订单管理_*`、`后台管理系统_运力配置_*`、`后台管理系统_计价管理_*`
-- 二期个人中心文档：`二期功能/乘客端_个人中心_我的订单_*`、`二期功能/乘客端_个人中心_设置_*`、`二期功能/乘客端_个人中心_我的钱包_免密支付与优惠券_*`
-- 司机换队文档：`二期功能/司机_换队功能_*`
-- 车队营销优惠券文档：`二期功能/车队营销优惠券_PRD.md`、`二期功能/车队营销优惠券_TECH.md`、`二期功能/车队营销优惠券_API.md`、`二期功能/车队营销优惠券_SQL.md`
-- 车队营销优惠券讨论稿：`二期功能/车队营销优惠券规则_讨论稿.md`
+- 修改前检查工作区状态，保留用户已有改动，不覆盖、不回退、不顺带整理无关文件。
+- 先确认变更属于乘客端、司机端还是管理后台，只修改和验证本次涉及的应用。
+- 修改接口调用前，先阅读同级后端仓库 `../didi-taxi` 中对应的 PRD、TECH、API 和 TEST 文档；发现文档与实现不一致时，先说明冲突并确认权威口径。
+- 前端不得自行推断后端权威状态；所有业务判断以后端响应和已定版文档为准。
+- 除非用户明确授权，不修改后端仓库，不启动、停止或重启任何前后端服务。
+- 修改完成后，在每个受影响的应用目录执行 `npm test` 和 `npm run build`；不得用未涉及应用的构建结果代替验证。
+- 正常联调通过 `VITE_API_BASE_URL` 指向后端网关；临时直连 BFF 或核心服务只允许用于用户明确要求的排障。
+- Git 提交前只纳入本次授权范围内的文件。
+- Git 提交信息格式统一为 `type(scope): description`。
+  - `type` 只使用：`feat`、`fix`、`docs`、`style`、`refactor`、`test`、`chore`。
+  - `scope` 使用本次变更涉及的应用、模块或功能名称。
+  - `description` 使用简洁中文；应用名、代码标识和通用缩写可以保留英文。

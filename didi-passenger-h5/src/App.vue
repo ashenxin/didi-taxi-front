@@ -72,6 +72,9 @@ const WS_PING_MS = 25_000
 
 const wsConnected = ref(false)
 const passengerHomeTab = ref('home')
+const aiQuery = ref('')
+const aiSubmittedQuery = ref('')
+const aiHasAnswer = ref(false)
 const rideSheetLift = ref(0)
 const rideSheetMaxLift = ref(0)
 const myOrderType = ref('ALL')
@@ -256,6 +259,13 @@ const {
   maybeDropToLogin,
   switchLoginMode,
 } = useAuth()
+
+if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('preview') === 'ai') {
+  authed.value = true
+  passengerHomeTab.value = 'ai'
+  aiSubmittedQuery.value = '从杭州东站到嘉兴南站，经过下沙服务区'
+  aiHasAnswer.value = true
+}
 
 function clearPhone() {
   phone.value = ''
@@ -868,6 +878,25 @@ async function cancelOrder() {
 
 function showFeatureTodo(name) {
   showToast({ message: `${name}：待开发`, duration: 1600 })
+}
+
+function openAiAssistant() {
+  passengerHomeTab.value = 'ai'
+}
+
+function fillAiSuggestion(text) {
+  aiQuery.value = text
+}
+
+function submitAiDemo() {
+  const query = aiQuery.value.trim()
+  if (!query) {
+    showToast({ message: '请先描述你的路线需求', duration: 1600 })
+    return
+  }
+  aiSubmittedQuery.value = query
+  aiHasAnswer.value = true
+  aiQuery.value = ''
 }
 
 function openBenefitsPage() {
@@ -2306,6 +2335,105 @@ function onRideSheetPointerEnd(ev) {
           </section>
         </section>
 
+        <section v-else-if="passengerHomeTab === 'ai'" class="ai-assistant-page">
+          <header class="ai-assistant-head">
+            <button type="button" aria-label="返回首页" @click="passengerHomeTab = 'home'">‹</button>
+            <div>
+              <strong>出行 AI 助手</strong>
+              <span>帮你规划指定途经点路线</span>
+            </div>
+            <span class="ai-assistant-head__badge">AI</span>
+          </header>
+
+          <div class="ai-conversation">
+            <section class="ai-welcome">
+              <span class="ai-avatar">✦</span>
+              <div>
+                <strong>想怎么走，告诉我就行</strong>
+                <p>你可以指定途中经过的高速收费站、加油站或服务区。</p>
+              </div>
+            </section>
+
+            <div v-if="!aiHasAnswer" class="ai-suggestions">
+              <button type="button" @click="fillAiSuggestion('从杭州东站到嘉兴南站，经过下沙服务区')">
+                去嘉兴南站，经过下沙服务区
+              </button>
+              <button type="button" @click="fillAiSuggestion('去上海虹桥站，途中经过一个高速加油站')">
+                去上海虹桥，途中经过加油站
+              </button>
+            </div>
+
+            <template v-else>
+              <div class="ai-user-message">{{ aiSubmittedQuery }}</div>
+              <article class="ai-answer-card">
+                <div class="ai-answer-card__title">
+                  <span class="ai-avatar ai-avatar--small">✦</span>
+                  <strong>已为你找到合适的路线</strong>
+                </div>
+                <p>从杭州东站前往嘉兴南站，可先沿沪昆高速行驶，途中经过下沙服务区，再继续向东北方向前往目的地。</p>
+                <ul>
+                  <li><strong>途经点</strong><span>下沙服务区（上海方向）</span></li>
+                  <li><strong>全程</strong><span>约 98.6 公里 · 1 小时 37 分钟</span></li>
+                  <li><strong>路线变化</strong><span>比直接路线增加约 15.8 公里</span></li>
+                </ul>
+
+                <figure class="ai-route-figure">
+                  <svg viewBox="0 0 360 220" role="img" aria-label="杭州东站经过下沙服务区到嘉兴南站的路线示意图">
+                    <defs>
+                      <linearGradient id="routeMapBg" x1="0" y1="0" x2="1" y2="1">
+                        <stop offset="0" stop-color="#eaf3fb" />
+                        <stop offset="1" stop-color="#f4f7ec" />
+                      </linearGradient>
+                    </defs>
+                    <rect width="360" height="220" fill="url(#routeMapBg)" />
+                    <g class="ai-map-roads">
+                      <path d="M-20 55 C70 85 120 20 220 58 S330 84 390 38" />
+                      <path d="M40 -20 C70 58 42 120 92 240" />
+                      <path d="M155 -20 C145 55 200 120 176 245" />
+                      <path d="M-10 170 C75 145 135 190 220 150 S320 132 380 166" />
+                      <path d="M270 -20 C250 50 292 112 260 240" />
+                    </g>
+                    <g class="ai-map-labels">
+                      <text x="14" y="40">杭州城区</text>
+                      <text x="230" y="48">海宁</text>
+                      <text x="282" y="178">嘉兴</text>
+                      <text x="112" y="201">G60 沪昆高速</text>
+                    </g>
+                    <path class="ai-route-line-shadow" d="M54 166 C92 150 91 112 126 105 S188 126 216 88 S264 56 306 48" />
+                    <path class="ai-route-line" d="M54 166 C92 150 91 112 126 105 S188 126 216 88 S264 56 306 48" />
+                    <g transform="translate(54 166)">
+                      <circle r="14" fill="#13b98c" stroke="#fff" stroke-width="4" />
+                      <text class="ai-map-marker-text" x="0" y="5">起</text>
+                    </g>
+                    <g transform="translate(178 111)">
+                      <circle r="17" fill="#1677ff" stroke="#fff" stroke-width="4" />
+                      <text class="ai-map-marker-text" x="0" y="5">途</text>
+                    </g>
+                    <g transform="translate(306 48)">
+                      <circle r="14" fill="#ff5a52" stroke="#fff" stroke-width="4" />
+                      <text class="ai-map-marker-text" x="0" y="5">终</text>
+                    </g>
+                    <g class="ai-map-bubble" transform="translate(126 70)">
+                      <rect width="116" height="30" rx="15" />
+                      <text x="58" y="20">下沙服务区</text>
+                    </g>
+                  </svg>
+                  <figcaption>
+                    <div><strong>杭州东站 → 嘉兴南站</strong><span>途经下沙服务区</span></div>
+                    <button type="button">查看路线</button>
+                  </figcaption>
+                </figure>
+                <small>当前为静态交互演示，路线数据将在高德 API 接通后实时生成。</small>
+              </article>
+            </template>
+          </div>
+
+          <form class="ai-composer" @submit.prevent="submitAiDemo">
+            <input v-model="aiQuery" type="text" maxlength="120" placeholder="描述路线需求，例如：途中经过服务区" />
+            <button type="submit" :disabled="!aiQuery.trim()">发送</button>
+          </form>
+        </section>
+
         <section v-else-if="passengerHomeTab === 'profile'" class="profile-page">
           <header class="profile-hero">
             <div>
@@ -3047,7 +3175,7 @@ function onRideSheetPointerEnd(ev) {
         </section>
       </van-popup>
 
-      <nav class="passenger-tabbar" aria-label="底部导航">
+      <nav v-if="passengerHomeTab !== 'ai'" class="passenger-tabbar" aria-label="底部导航">
         <button
           type="button"
           :class="{ 'passenger-tabbar__item--active': passengerHomeTab === 'home' }"
@@ -3065,6 +3193,14 @@ function onRideSheetPointerEnd(ev) {
         >
           <span class="passenger-tabbar__icon">▣</span>
           <span>券包</span>
+        </button>
+        <button
+          type="button"
+          class="passenger-tabbar__item passenger-tabbar__item--ai"
+          @click="openAiAssistant"
+        >
+          <span class="passenger-tabbar__ai-orb">AI</span>
+          <span>AI 助手</span>
         </button>
         <button
           type="button"
