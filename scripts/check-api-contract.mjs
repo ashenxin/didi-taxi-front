@@ -24,6 +24,9 @@ const contracts = [
   ['GET', '/app/api/v1/wallet/coupons/claimable', 'didi-passenger-h5', '/app/api/v1/wallet/coupons/claimable'],
   ['POST', '/app/api/v1/wallet/coupons/claim', 'didi-passenger-h5', '/app/api/v1/wallet/coupons/claim'],
   ['POST', '/app/api/v1/benefits/sign-in', 'didi-passenger-h5', '/app/api/v1/benefits/sign-in'],
+  ['POST', '/app/api/v1/ai/conversations', 'didi-passenger-h5', "const BASE_PATH = '/app/api/v1/ai/conversations'"],
+  ['GET', '/app/api/v1/ai/conversations/{conversationNo}/messages', 'didi-passenger-h5', '/messages?${query}'],
+  ['POST', '/app/api/v1/ai/conversations/{conversationNo}/messages/stream', 'didi-passenger-h5', '/messages/stream'],
 
   ['GET', '/driver/api/v1/profile/orders', 'didi-driver-h5', '/driver/api/v1/profile/orders?'],
   ['GET', '/driver/api/v1/profile/orders/{tripId}', 'didi-driver-h5', '/driver/api/v1/profile/orders/${encodeURIComponent(id)}'],
