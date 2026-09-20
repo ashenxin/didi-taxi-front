@@ -4,7 +4,8 @@ import { showConfirmDialog, showToast } from 'vant'
 
 import { createIdempotencyKey } from '../../utils/idempotency'
 import { getToken } from '../../api/http'
-import { createAiConversation, listAiMessages, streamAiMessage } from './aiConversationApi'
+import { createAiConversation, listAiMessages, streamAiMessage, streamAiPlaceChoice,
+  streamAiRouteCheckChoice } from './aiConversationApi'
 
 const emit = defineEmits(['back', 'unauthorized'])
 
@@ -18,10 +19,12 @@ const historyError = ref('')
 const hasMoreHistory = ref(false)
 const historyCursor = ref(null)
 const notice = ref('')
+const currentTime = ref(Date.now())
 let createKey = null
 let pendingAttempt = null
 let activeController = null
 let nextLocalId = 0
+let choiceClock = null
 
 const suggestions = [
   '帮我规划从德清高速路口到西溪湿地的路线',
@@ -38,6 +41,40 @@ const latestAssistant = computed(() => [...visibleMessages.value].reverse().find
 const showConfirmShortcut = computed(() =>
   !isSending.value && !pendingAttempt && latestAssistant.value?.content?.trim().endsWith('对吗？'),
 )
+const activePlaceChoices = computed(() => {
+  const choices = latestAssistant.value?.payload?.placeChoices
+  if (latestAssistant.value?.messageType !== 'PLACE_CHOICES' || !choices?.taskNo
+    || !Array.isArray(choices.choices) || !choices.choices.length) return null
+  return choices
+})
+const activeRouteCheckChoices = computed(() => {
+  const choices = latestAssistant.value?.payload?.routeCheckChoices
+  if (latestAssistant.value?.messageType !== 'ROUTE_CHECK_CHOICES' || !choices?.taskNo
+    || !Array.isArray(choices.choices) || choices.choices.length < 2) return null
+  return choices
+})
+
+function choiceExpired(choices) {
+  return !choices?.expiresAt || Date.parse(choices.expiresAt) <= currentTime.value
+}
+
+function choiceExpiredHint(choices) {
+  return choices?.flow === 'CURRENT_ROUTE_CHECK'
+    ? '核查地点选项已过期，请重新发起当前路线核查。'
+    : '选项已过期，请重新描述起点和终点。'
+}
+
+function routeCheckChoiceExpiredHint() {
+  return '这组核查方式选项已过期，请重新询问当前路线。'
+}
+
+function userContent(message) {
+  if (!message.content?.startsWith('已选择地点（PC-')) return message.content
+  const id = message.content.slice('已选择地点（'.length, -1)
+  const selected = messages.value.flatMap((entry) => entry.payload?.placeChoices?.choices || [])
+    .find((choice) => choice.placeChoiceId === id)
+  return selected ? `已选择地点：${selected.name}${selected.city ? `（${selected.city}）` : ''}` : '已选择地点'
+}
 
 /** 只记住当前登录令牌对应的会话号；消息正文始终从后端读取。 */
 function conversationStorageKey() {
@@ -304,14 +341,25 @@ async function performAttempt() {
   activeController = new AbortController()
   try {
     const number = await ensureConversation()
-    const result = await streamAiMessage({
+    const request = attempt.kind === 'place-choice' ? streamAiPlaceChoice
+      : attempt.kind === 'route-check-choice' ? streamAiRouteCheckChoice : streamAiMessage
+    const result = await request({
       conversationNo: number,
-      content: attempt.content,
+      ...(attempt.kind === 'place-choice'
+        ? { taskNo: attempt.taskNo, placeChoiceId: attempt.placeChoiceId,
+          expectedRequestVersion: attempt.expectedRequestVersion,
+          choiceName: attempt.choiceName, choiceCity: attempt.choiceCity }
+        : attempt.kind === 'route-check-choice'
+          ? { taskNo: attempt.taskNo, checkMode: attempt.checkMode,
+            expectedRequestVersion: attempt.expectedRequestVersion,
+            choiceLabel: attempt.choiceLabel }
+        : { content: attempt.content }),
       idempotencyKey: attempt.key,
       signal: activeController.signal,
       onEvent(name, data) {
         if (name === 'turn.started') updateUser(attempt.localId, { requestNo: data.requestNo })
-        if (name === 'answer.completed' || name === 'route.card') {
+        if (name === 'answer.completed' || name === 'route.card' || name === 'place.choices'
+          || name === 'route-check.choices') {
           addAssistant(data)
           updateUser(attempt.localId, { status: 'done' })
         }
@@ -373,8 +421,41 @@ function submit() {
   const localId = ++nextLocalId
   const key = createIdempotencyKey()
   messages.value.push({ localId, role: 'USER', content, clientMessageNo: key, status: 'sending', error: '' })
-  pendingAttempt = { localId, content, key }
+  pendingAttempt = { kind: 'text', localId, content, key }
   draft.value = ''
+  scrollToLatest()
+  performAttempt()
+}
+
+function selectPlace(choice) {
+  const options = activePlaceChoices.value
+  if (!options || choiceExpired(options) || isSending.value || historyLoading.value || pendingAttempt
+    || !options.choices.some((item) => item.placeChoiceId === choice.placeChoiceId)) return
+  const localId = ++nextLocalId
+  const key = createIdempotencyKey()
+  const content = `已选择地点：${choice.name}${choice.city ? `（${choice.city}）` : ''}`
+  messages.value.push({ localId, role: 'USER', content, clientMessageNo: key,
+    status: 'sending', error: '' })
+  pendingAttempt = { kind: 'place-choice', localId, content, key,
+    taskNo: options.taskNo, placeChoiceId: choice.placeChoiceId,
+    expectedRequestVersion: options.requestVersion,
+    choiceName: choice.name, choiceCity: choice.city || null }
+  scrollToLatest()
+  performAttempt()
+}
+
+function selectRouteCheckMode(choice) {
+  const options = activeRouteCheckChoices.value
+  if (!options || choiceExpired(options) || isSending.value || historyLoading.value || pendingAttempt
+    || !options.choices.some((item) => item.choiceId === choice.choiceId)) return
+  const localId = ++nextLocalId
+  const key = createIdempotencyKey()
+  const content = `我想确认：${choice.label}`
+  messages.value.push({ localId, role: 'USER', content, clientMessageNo: key,
+    status: 'sending', error: '' })
+  pendingAttempt = { kind: 'route-check-choice', localId, content, key,
+    taskNo: options.taskNo, checkMode: choice.choiceId,
+    expectedRequestVersion: options.requestVersion, choiceLabel: choice.label }
   scrollToLatest()
   performAttempt()
 }
@@ -422,9 +503,13 @@ function back() {
 }
 
 onMounted(() => {
+  choiceClock = window.setInterval(() => { currentTime.value = Date.now() }, 15000)
   if (conversationNo.value) refreshHistory()
 })
-onBeforeUnmount(() => activeController?.abort())
+onBeforeUnmount(() => {
+  activeController?.abort()
+  if (choiceClock) window.clearInterval(choiceClock)
+})
 </script>
 
 <template>
@@ -466,7 +551,7 @@ onBeforeUnmount(() => activeController?.abort())
 
       <template v-for="message in visibleMessages" :key="message.localId">
         <div v-if="message.role === 'USER'" class="route-ai-user-row">
-          <div class="route-ai-bubble route-ai-bubble--user">{{ message.content }}</div>
+          <div class="route-ai-bubble route-ai-bubble--user">{{ userContent(message) }}</div>
           <span class="route-ai-message-state">
             {{ message.status === 'sending' ? '正在处理…' : message.status === 'uncertain' ? '结果未确认' : '' }}
           </span>
@@ -480,6 +565,30 @@ onBeforeUnmount(() => activeController?.abort())
           <span class="route-ai-avatar route-ai-avatar--small" aria-hidden="true">✦</span>
           <article class="route-ai-bubble route-ai-bubble--assistant">
             <p class="route-ai-answer">{{ message.content }}</p>
+            <div v-if="message.payload?.placeChoices" class="route-ai-place-choices">
+              <button v-for="choice in message.payload.placeChoices.choices" :key="choice.placeChoiceId"
+                type="button" :disabled="message !== latestAssistant || choiceExpired(message.payload.placeChoices)
+                  || isSending || historyLoading || !!pendingAttempt"
+                @click="selectPlace(choice)">
+                <strong>{{ choice.name }}</strong>
+                <span>{{ [choice.city, choice.address, choice.type].filter(Boolean).join(' · ') }}</span>
+              </button>
+              <p v-if="message === latestAssistant && choiceExpired(message.payload.placeChoices)">
+                {{ choiceExpiredHint(message.payload.placeChoices) }}
+              </p>
+            </div>
+            <div v-if="message.payload?.routeCheckChoices" class="route-ai-place-choices">
+              <button v-for="choice in message.payload.routeCheckChoices.choices" :key="choice.choiceId"
+                type="button" :disabled="message !== latestAssistant
+                  || choiceExpired(message.payload.routeCheckChoices)
+                  || isSending || historyLoading || !!pendingAttempt"
+                @click="selectRouteCheckMode(choice)">
+                <strong>{{ choice.label }}</strong>
+              </button>
+              <p v-if="message === latestAssistant && choiceExpired(message.payload.routeCheckChoices)">
+                {{ routeCheckChoiceExpiredHint() }}
+              </p>
+            </div>
             <template v-if="message.routeCard">
               <div class="route-ai-route-card">
                 <div class="route-ai-route-title">
@@ -554,6 +663,11 @@ onBeforeUnmount(() => activeController?.abort())
 .route-ai-message-error { max-width: 82%; margin: 5px 0 0; color: #ba4a37; text-align: right; font-size: 11px; }
 .route-ai-retry { margin-top: 7px; padding: 7px 12px; border: 1px solid #b7d4ff; border-radius: 999px; background: #fff; color: #176de7; font-size: 11px; font-weight: 700; }
 .route-ai-answer { margin: 0; white-space: pre-wrap; }
+.route-ai-place-choices { display: grid; gap: 8px; margin-top: 12px; }
+.route-ai-place-choices button { display: grid; gap: 2px; width: 100%; padding: 10px 12px; border: 1px solid #cfe1f8; border-radius: 12px; background: #f7fbff; color: #1d385c; text-align: left; }
+.route-ai-place-choices button span { color: #71859d; font-size: 11px; }
+.route-ai-place-choices button:disabled { opacity: .5; }
+.route-ai-place-choices p { margin: 0; color: #a64334; font-size: 11px; }
 .route-ai-bubble--assistant { flex: 1; max-width: min(calc(100% - 40px), 490px); }
 .route-ai-bubble--assistant small { display: block; margin-top: 10px; color: #9aa5b4; font-size: 10px; }
 .route-ai-route-card { overflow: hidden; margin-top: 12px; border: 1px solid #e5edf5; border-radius: 15px; background: #f8fbff; }

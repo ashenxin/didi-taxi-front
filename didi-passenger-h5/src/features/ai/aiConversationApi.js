@@ -44,9 +44,34 @@ async function responseError(response) {
 
 /** 完整内容事件已经持久化；turn.completed 用来确认流正常结束。 */
 export async function streamAiMessage({ conversationNo, content, idempotencyKey, signal, onEvent }) {
+  return streamRequest({
+    path: `${BASE_PATH}/${encodeURIComponent(conversationNo)}/messages/stream`,
+    body: { content }, idempotencyKey, signal, onEvent,
+  })
+}
+
+export async function streamAiPlaceChoice({ conversationNo, taskNo, placeChoiceId,
+  expectedRequestVersion, choiceName, choiceCity, idempotencyKey, signal, onEvent }) {
+  return streamRequest({
+    path: `${BASE_PATH}/${encodeURIComponent(conversationNo)}/route-tasks/${encodeURIComponent(taskNo)}/place-choice/stream`,
+    body: { placeChoiceId, expectedRequestVersion, choiceName, choiceCity },
+    idempotencyKey, signal, onEvent,
+  })
+}
+
+export async function streamAiRouteCheckChoice({ conversationNo, taskNo, checkMode,
+  expectedRequestVersion, choiceLabel, idempotencyKey, signal, onEvent }) {
+  return streamRequest({
+    path: `${BASE_PATH}/${encodeURIComponent(conversationNo)}/route-check-tasks/${encodeURIComponent(taskNo)}/mode-choice/stream`,
+    body: { checkMode, expectedRequestVersion, choiceLabel },
+    idempotencyKey, signal, onEvent,
+  })
+}
+
+async function streamRequest({ path, body, idempotencyKey, signal, onEvent }) {
   const token = getToken()
   const response = await fetch(
-    `${API_BASE_URL}${BASE_PATH}/${encodeURIComponent(conversationNo)}/messages/stream`,
+    `${API_BASE_URL}${path}`,
     {
       method: 'POST',
       headers: {
@@ -55,7 +80,7 @@ export async function streamAiMessage({ conversationNo, content, idempotencyKey,
         'Idempotency-Key': idempotencyKey,
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify(body),
       signal,
     },
   )
@@ -70,7 +95,8 @@ export async function streamAiMessage({ conversationNo, content, idempotencyKey,
   const result = { started: false, contentReceived: false, completed: false, failure: null }
   const parser = createSseParser((name, data) => {
     if (name === 'turn.started') result.started = true
-    if (name === 'answer.completed' || name === 'route.card') result.contentReceived = true
+    if (name === 'answer.completed' || name === 'route.card' || name === 'place.choices'
+      || name === 'route-check.choices') result.contentReceived = true
     if (name === 'turn.completed') result.completed = true
     if (name === 'turn.failed') result.failure = data
     onEvent(name, data)
