@@ -4,7 +4,8 @@ import { showConfirmDialog, showToast } from 'vant'
 
 import { createIdempotencyKey } from '../../utils/idempotency'
 import { getToken } from '../../api/http'
-import { createAiConversation, listAiMessages, streamAiMessage, streamAiPlaceChoice,
+import { createAiConversation, deleteAiConversation, getAiRequestStatus,
+  listAiConversations, listAiMessages, streamAiMessage, streamAiPlaceChoice,
   streamAiRouteCheckChoice } from './aiConversationApi'
 
 const emit = defineEmits(['back', 'unauthorized'])
@@ -18,6 +19,12 @@ const historyLoading = ref(false)
 const historyError = ref('')
 const hasMoreHistory = ref(false)
 const historyCursor = ref(null)
+const conversationList = ref([])
+const conversationListOpen = ref(false)
+const conversationListLoading = ref(false)
+const conversationListError = ref('')
+const conversationListHasMore = ref(false)
+const conversationListCursor = ref(null)
 const notice = ref('')
 const currentTime = ref(Date.now())
 let createKey = null
@@ -38,9 +45,6 @@ const visibleMessages = computed(() => [...messages.value].sort((left, right) =>
   return left.localId - right.localId
 }))
 const latestAssistant = computed(() => [...visibleMessages.value].reverse().find((item) => item.role === 'ASSISTANT'))
-const showConfirmShortcut = computed(() =>
-  !isSending.value && !pendingAttempt && latestAssistant.value?.content?.trim().endsWith('对吗？'),
-)
 const activePlaceChoices = computed(() => {
   const choices = latestAssistant.value?.payload?.placeChoices
   if (latestAssistant.value?.messageType !== 'PLACE_CHOICES' || !choices?.taskNo
@@ -61,19 +65,15 @@ function choiceExpired(choices) {
 function choiceExpiredHint(choices) {
   return choices?.flow === 'CURRENT_ROUTE_CHECK'
     ? '核查地点选项已过期，请重新发起当前路线核查。'
+    : choices?.flow === 'VIA_ROUTE_PLAN'
+      ? '途经地点选项已过期，请重新说明途经要求。'
+      : choices?.flow === 'PARTIAL_ENDPOINT'
+        ? '地点选项已过期，请重新告诉我刚才提供的起点或终点。'
     : '选项已过期，请重新描述起点和终点。'
 }
 
 function routeCheckChoiceExpiredHint() {
   return '这组核查方式选项已过期，请重新询问当前路线。'
-}
-
-function userContent(message) {
-  if (!message.content?.startsWith('已选择地点（PC-')) return message.content
-  const id = message.content.slice('已选择地点（'.length, -1)
-  const selected = messages.value.flatMap((entry) => entry.payload?.placeChoices?.choices || [])
-    .find((choice) => choice.placeChoiceId === id)
-  return selected ? `已选择地点：${selected.name}${selected.city ? `（${selected.city}）` : ''}` : '已选择地点'
 }
 
 /** 只记住当前登录令牌对应的会话号；消息正文始终从后端读取。 */
@@ -111,6 +111,91 @@ function forgetConversation() {
     if (key) sessionStorage.removeItem(key)
   } catch {
     // 会话存储不可用时无需额外处理。
+  }
+}
+
+function clearConversationMessages() {
+  messages.value = []
+  draft.value = ''
+  notice.value = ''
+  historyError.value = ''
+  hasMoreHistory.value = false
+  historyCursor.value = null
+  createKey = null
+  pendingAttempt = null
+}
+
+function formatConversationTime(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(date)
+}
+
+async function loadConversationList(append = false) {
+  if (conversationListLoading.value) return
+  conversationListLoading.value = true
+  conversationListError.value = ''
+  try {
+    const page = await listAiConversations({
+      beforeConversationNo: append ? conversationListCursor.value : undefined,
+    })
+    const rows = append ? [...conversationList.value, ...page.conversations] : page.conversations
+    conversationList.value = rows.filter((item, index) =>
+      rows.findIndex((candidate) => candidate.conversationNo === item.conversationNo) === index)
+    conversationListHasMore.value = page.hasMore
+    conversationListCursor.value = page.nextBeforeConversationNo || null
+  } catch (error) {
+    if (error?.httpStatus === 401 || Number(error?.code) === 401) emit('unauthorized', error)
+    else conversationListError.value = error?.message || '会话列表加载失败'
+  } finally {
+    conversationListLoading.value = false
+  }
+}
+
+function openConversationList() {
+  if (isSending.value || historyLoading.value) return
+  conversationListOpen.value = true
+  loadConversationList(false)
+}
+
+function switchConversation(item) {
+  if (!item?.conversationNo || isSending.value || historyLoading.value) return
+  conversationListOpen.value = false
+  if (conversationNo.value === item.conversationNo) return
+  conversationNo.value = item.conversationNo
+  rememberConversation(item.conversationNo)
+  clearConversationMessages()
+  refreshHistory()
+}
+
+async function removeConversation(item) {
+  if (!item?.conversationNo || isSending.value || historyLoading.value) return
+  try {
+    await showConfirmDialog({
+      title: '删除这段会话？',
+      message: '删除后将不再显示这段客服记录。',
+      confirmButtonText: '删除',
+      confirmButtonColor: '#d94b3d',
+    })
+  } catch {
+    return
+  }
+  try {
+    await deleteAiConversation(item.conversationNo)
+    conversationList.value = conversationList.value.filter(
+      (candidate) => candidate.conversationNo !== item.conversationNo)
+    if (conversationNo.value === item.conversationNo) {
+      conversationNo.value = ''
+      forgetConversation()
+      clearConversationMessages()
+    }
+    showToast('会话已删除')
+  } catch (error) {
+    if (error?.httpStatus === 401 || Number(error?.code) === 401) emit('unauthorized', error)
+    else showToast(error?.message || '删除会话失败')
   }
 }
 
@@ -322,6 +407,28 @@ function addAssistant(event) {
   scrollToLatest()
 }
 
+async function reconcilePendingAttempt(attempt) {
+  if (!attempt || !conversationNo.value) return
+  const item = messages.value.find((message) => message.localId === attempt.localId)
+  const requestNo = attempt.requestNo || item?.requestNo
+  if (requestNo) {
+    try {
+      const state = await getAiRequestStatus(conversationNo.value, requestNo)
+      if (state.status === 'PROCESSING') {
+        notice.value = '这条消息仍在处理中，可稍后再次查看会话。'
+        return
+      }
+    } catch (error) {
+      if (error?.httpStatus === 401 || Number(error?.code) === 401) {
+        emit('unauthorized', error)
+        return
+      }
+      // 状态接口失败时仍可用消息历史按幂等键和 requestNo 对账。
+    }
+  }
+  await refreshHistory()
+}
+
 async function ensureConversation() {
   if (conversationNo.value) return conversationNo.value
   createKey ||= createIdempotencyKey()
@@ -357,7 +464,10 @@ async function performAttempt() {
       idempotencyKey: attempt.key,
       signal: activeController.signal,
       onEvent(name, data) {
-        if (name === 'turn.started') updateUser(attempt.localId, { requestNo: data.requestNo })
+        if (name === 'turn.started') {
+          attempt.requestNo = data.requestNo
+          updateUser(attempt.localId, { requestNo: data.requestNo })
+        }
         if (name === 'answer.completed' || name === 'route.card' || name === 'place.choices'
           || name === 'route-check.choices') {
           addAssistant(data)
@@ -406,7 +516,7 @@ async function performAttempt() {
     scrollToLatest()
     if (pendingAttempt?.localId === attempt.localId
       && messages.value.find((message) => message.localId === attempt.localId)?.status === 'uncertain') {
-      refreshHistory()
+      reconcilePendingAttempt(attempt)
     }
   }
 }
@@ -464,11 +574,6 @@ function retry(localId) {
   if (pendingAttempt?.localId === localId) performAttempt()
 }
 
-function confirmEndpoints() {
-  draft.value = '对'
-  submit()
-}
-
 async function newConversation() {
   if (isSending.value || historyLoading.value) return
   if (messages.value.length) {
@@ -484,14 +589,8 @@ async function newConversation() {
   }
   conversationNo.value = ''
   forgetConversation()
-  messages.value = []
-  draft.value = ''
-  notice.value = ''
-  historyError.value = ''
-  hasMoreHistory.value = false
-  historyCursor.value = null
-  createKey = null
-  pendingAttempt = null
+  clearConversationMessages()
+  conversationListOpen.value = false
 }
 
 function back() {
@@ -521,11 +620,40 @@ onBeforeUnmount(() => {
         <span>{{ conversationNo ? `会话 ${conversationNo}` : '说出起点和终点，开始规划' }}</span>
       </div>
       <div class="route-ai-head-actions">
-        <button v-if="conversationNo" type="button" class="route-ai-history"
-          :disabled="isSending || historyLoading" @click="refreshHistory">查看历史</button>
+        <button type="button" class="route-ai-history"
+          :disabled="isSending || historyLoading" @click="openConversationList">会话</button>
         <button type="button" class="route-ai-new" :disabled="isSending || historyLoading" @click="newConversation">新对话</button>
       </div>
     </header>
+
+    <div v-if="conversationListOpen" class="route-ai-list-mask" @click.self="conversationListOpen = false">
+      <aside class="route-ai-list" aria-label="客服会话列表">
+        <div class="route-ai-list-head">
+          <strong>历史会话</strong>
+          <button type="button" aria-label="关闭会话列表" @click="conversationListOpen = false">×</button>
+        </div>
+        <p v-if="conversationListError" class="route-ai-list-error">{{ conversationListError }}</p>
+        <div v-if="conversationList.length" class="route-ai-list-items">
+          <div v-for="item in conversationList" :key="item.conversationNo"
+            class="route-ai-list-item" :class="{ 'is-active': item.conversationNo === conversationNo }">
+            <button type="button" class="route-ai-list-select" @click="switchConversation(item)">
+              <strong>{{ item.title || '新对话' }}</strong>
+              <span>{{ formatConversationTime(item.lastMessageAt || item.createdAt) }}</span>
+            </button>
+            <button type="button" class="route-ai-list-delete" aria-label="删除会话"
+              @click="removeConversation(item)">删除</button>
+          </div>
+        </div>
+        <p v-else-if="!conversationListLoading && !conversationListError" class="route-ai-list-empty">
+          还没有历史会话
+        </p>
+        <button v-if="conversationListHasMore" type="button" class="route-ai-list-more"
+          :disabled="conversationListLoading" @click="loadConversationList(true)">
+          {{ conversationListLoading ? '加载中…' : '加载更多' }}
+        </button>
+        <p v-else-if="conversationListLoading" class="route-ai-list-empty">加载中…</p>
+      </aside>
+    </div>
 
     <div ref="conversationElement" class="route-ai-conversation" role="log" aria-live="polite">
       <div class="route-ai-intro">
@@ -551,7 +679,7 @@ onBeforeUnmount(() => {
 
       <template v-for="message in visibleMessages" :key="message.localId">
         <div v-if="message.role === 'USER'" class="route-ai-user-row">
-          <div class="route-ai-bubble route-ai-bubble--user">{{ userContent(message) }}</div>
+          <div class="route-ai-bubble route-ai-bubble--user">{{ message.content }}</div>
           <span class="route-ai-message-state">
             {{ message.status === 'sending' ? '正在处理…' : message.status === 'uncertain' ? '结果未确认' : '' }}
           </span>
@@ -616,9 +744,6 @@ onBeforeUnmount(() => {
       </template>
 
       <div v-if="isSending" class="route-ai-working" role="status">正在查询地点与路线…</div>
-      <div v-if="showConfirmShortcut" class="route-ai-confirm-shortcut">
-        <button type="button" @click="confirmEndpoints">对，起终点正确</button>
-      </div>
     </div>
 
     <p v-if="notice" class="route-ai-notice" role="alert">{{ notice }}</p>
@@ -642,6 +767,21 @@ onBeforeUnmount(() => {
 .route-ai-history:disabled { opacity: .5; }
 .route-ai-new { border: 0; border-radius: 14px; padding: 10px 11px; background: #edf5ff; color: #176de7; font-size: 12px; font-weight: 700; }
 .route-ai-new:disabled { opacity: .5; }
+.route-ai-list-mask { position: absolute; inset: 0; z-index: 10; display: flex; justify-content: flex-end; background: rgba(20,35,55,.32); }
+.route-ai-list { width: min(86%, 360px); height: 100%; overflow-y: auto; box-sizing: border-box; padding: calc(18px + env(safe-area-inset-top)) 14px 24px; background: #f8fbff; box-shadow: -10px 0 32px rgba(24,53,88,.18); }
+.route-ai-list-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; color: #182a43; }
+.route-ai-list-head strong { font-size: 18px; }
+.route-ai-list-head button { width: 34px; height: 34px; border: 0; border-radius: 12px; background: #e9f1fa; color: #50657d; font-size: 22px; }
+.route-ai-list-items { display: grid; gap: 9px; }
+.route-ai-list-item { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 7px; padding: 4px; border: 1px solid #e0eaf5; border-radius: 14px; background: white; }
+.route-ai-list-item.is-active { border-color: #91bdf4; background: #eef6ff; }
+.route-ai-list-select { min-width: 0; display: grid; gap: 4px; padding: 9px; border: 0; background: transparent; color: #213653; text-align: left; }
+.route-ai-list-select strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.route-ai-list-select span { color: #8593a4; font-size: 10px; }
+.route-ai-list-delete { padding: 8px; border: 0; background: transparent; color: #c55347; font-size: 11px; }
+.route-ai-list-error, .route-ai-list-empty { margin: 18px 0; color: #7b899a; text-align: center; font-size: 12px; }
+.route-ai-list-error { color: #b6493c; }
+.route-ai-list-more { display: block; margin: 14px auto 0; padding: 8px 14px; border: 1px solid #cfe0f4; border-radius: 999px; background: white; color: #316294; font-size: 11px; }
 .route-ai-conversation { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 15px 126px; box-sizing: border-box; }
 .route-ai-intro, .route-ai-assistant-row { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 18px; }
 .route-ai-history-more { margin: 0 0 16px; text-align: center; }
@@ -686,8 +826,6 @@ onBeforeUnmount(() => {
 .route-ai-route-metrics strong { color: #1f304b; font-size: 13px; }
 .route-ai-via, .route-ai-summary-hint { margin: 0; padding: 0 12px 11px; color: #698097; font-size: 11px; }
 .route-ai-working { margin: 0 0 16px 43px; color: #6684a8; font-size: 12px; }
-.route-ai-confirm-shortcut { margin: 0 0 18px 43px; }
-.route-ai-confirm-shortcut button { padding: 9px 13px; border: 1px solid #b8d8ff; border-radius: 999px; background: white; color: #176de7; font-size: 12px; font-weight: 700; }
 .route-ai-notice { position: absolute; right: 14px; bottom: calc(78px + env(safe-area-inset-bottom)); left: 14px; z-index: 3; margin: 0; padding: 9px 11px; border-radius: 10px; background: #fff1ed; color: #a64334; font-size: 11px; box-shadow: 0 4px 14px rgba(70,40,25,.08); }
 .route-ai-composer { position: absolute; right: 12px; bottom: calc(11px + env(safe-area-inset-bottom)); left: 12px; z-index: 3; display: flex; gap: 8px; padding: 8px; border: 1px solid #e5edf6; border-radius: 21px; background: rgba(255,255,255,.97); box-shadow: 0 9px 30px rgba(25,50,85,.15); }
 .route-ai-composer input { flex: 1; min-width: 0; padding: 0 8px; border: 0; outline: none; background: transparent; color: #172943; font-size: 13px; }

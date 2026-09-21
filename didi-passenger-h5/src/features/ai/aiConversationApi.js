@@ -1,4 +1,4 @@
-import { API_BASE_URL, clearToken, getJson, getToken, postJson } from '../../api/http'
+import { API_BASE_URL, clearToken, deleteJson, getJson, getToken, postJson } from '../../api/http'
 import { createSseParser } from './sseParser'
 
 const BASE_PATH = '/app/api/v1/ai/conversations'
@@ -26,6 +26,31 @@ export async function listAiMessages(conversationNo, { limit = 20, beforeSequenc
     throw apiError('客服历史记录格式不正确，请稍后重试')
   }
   return result
+}
+
+/** 会话按最后消息时间倒序；beforeConversationNo 是服务端游标，不在前端拼时间条件。 */
+export async function listAiConversations({ limit = 20, beforeConversationNo } = {}) {
+  const query = new URLSearchParams({ limit: String(limit) })
+  if (beforeConversationNo) query.set('beforeConversationNo', beforeConversationNo)
+  const result = await getJson(`${BASE_PATH}?${query}`)
+  if (!Array.isArray(result?.conversations) || typeof result.hasMore !== 'boolean') {
+    throw apiError('客服会话列表格式不正确，请稍后重试')
+  }
+  return result
+}
+
+export async function getAiRequestStatus(conversationNo, requestNo) {
+  const result = await getJson(
+    `${BASE_PATH}/${encodeURIComponent(conversationNo)}/requests/${encodeURIComponent(requestNo)}`,
+  )
+  if (!result?.requestNo || !result?.status) {
+    throw apiError('客服请求状态格式不正确，请稍后重试')
+  }
+  return result
+}
+
+export async function deleteAiConversation(conversationNo) {
+  return deleteJson(`${BASE_PATH}/${encodeURIComponent(conversationNo)}`)
 }
 
 async function responseError(response) {
