@@ -116,12 +116,12 @@ const loadDetail = async () => {
   }
 }
 
+/** 与后端 order_event.operator_type 权威口径一致：0系统、1乘客、2司机；未定义值显示“未知”。 */
 const operatorTypeText = (type) => {
   const map = {
     0: '系统',
     1: '乘客',
-    2: '司机',
-    3: '客服'
+    2: '司机'
   }
   return map[type] ?? '未知'
 }

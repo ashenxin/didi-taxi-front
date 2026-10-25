@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "npm run check:api-contract",
+    "test": "npm run check:api-contract && node --test src/features/ai/aiPendingRecovery.test.mjs",
     "check:api-contract": "node ../scripts/check-api-contract.mjs",
     "build": "npm run check:api-contract && vite build",
     "preview": "vite preview"

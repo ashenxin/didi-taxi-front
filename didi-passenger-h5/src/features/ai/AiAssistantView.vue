@@ -7,6 +7,7 @@ import { getToken } from '../../api/http'
 import { createAiConversation, deleteAiConversation, getAiRequestStatus,
   listAiConversations, listAiMessages, streamAiMessage, streamAiPlaceChoice,
   streamAiRouteCheckChoice } from './aiConversationApi'
+import { pendingRequestFromHistory, terminalRecoveredReply } from './aiPendingRecovery'
 
 const emit = defineEmits(['back', 'unauthorized'])
 
@@ -27,17 +28,24 @@ const conversationListHasMore = ref(false)
 const conversationListCursor = ref(null)
 const notice = ref('')
 const currentTime = ref(Date.now())
+const recoveringRequestNo = ref('')
 let createKey = null
 let pendingAttempt = null
 let activeController = null
 let nextLocalId = 0
 let choiceClock = null
+let recoveryTimer = null
+let recoveryGeneration = 0
+let historyGeneration = 0
+let viewActive = true
+const RECOVERY_POLL_MS = 5000
 
 const suggestions = [
   '帮我规划从德清高速路口到西溪湿地的路线',
   '从杭州东站到西溪湿地怎么走？',
 ]
-const canSend = computed(() => !!draft.value.trim() && !isSending.value && !historyLoading.value && !pendingAttempt)
+const canSend = computed(() => !!draft.value.trim() && !isSending.value && !historyLoading.value
+  && !pendingAttempt && !recoveringRequestNo.value)
 const visibleMessages = computed(() => [...messages.value].sort((left, right) => {
   if (left.sequenceNo != null && right.sequenceNo != null) return left.sequenceNo - right.sequenceNo
   if (left.sequenceNo != null) return -1
@@ -115,6 +123,9 @@ function forgetConversation() {
 }
 
 function clearConversationMessages() {
+  stopRecoveredRequest()
+  historyGeneration += 1
+  historyLoading.value = false
   messages.value = []
   draft.value = ''
   notice.value = ''
@@ -249,9 +260,12 @@ function mergeHistory(views) {
     if (current) {
       current.messageNo = view.messageNo
       current.requestNo = view.requestNo
+      // 已落库正文覆盖乐观展示，地点选择以服务端规范名称为准。
+      current.content = view.content
       if (view.role === 'USER' && view.clientMessageNo) current.clientMessageNo = view.clientMessageNo
       current.sequenceNo = view.sequenceNo
       current.createdAt = view.createdAt
+      if (view.role === 'ASSISTANT') current.status = view.status
       if (view.role === 'ASSISTANT' && !current.routeCard) {
         current.payload = payload
         current.routeCard = routeCardOf({ payload })
@@ -275,6 +289,14 @@ function mergeHistory(views) {
         createdAt: view.createdAt,
       })
     }
+    if (view.role === 'ASSISTANT') {
+      const user = messages.value.find((message) => message.role === 'USER'
+        && message.requestNo === view.requestNo)
+      if (user && (user.status === 'sending' || user.status === 'uncertain')) {
+        user.status = view.status === 'FAILED' ? 'failed' : 'done'
+        user.error = view.status === 'FAILED' ? view.failureMessage || view.content : ''
+      }
+    }
   }
 
   // 断流早于 turn.started 时先用客户端幂等键找回 requestNo，再核对该轮最终回复。
@@ -293,54 +315,145 @@ function mergeHistory(views) {
   }
 }
 
-async function refreshHistory() {
-  if (!conversationNo.value || historyLoading.value || isSending.value) return
+function stopRecoveredRequest() {
+  if (recoveryTimer) window.clearTimeout(recoveryTimer)
+  recoveryTimer = null
+  recoveryGeneration += 1
+  recoveringRequestNo.value = ''
+}
+
+/** 会话已被删除或当前账号已不可见：停止恢复轮询并回到新对话入口。 */
+function dropUnavailableConversation() {
+  stopRecoveredRequest()
+  historyGeneration += 1
+  historyLoading.value = false
+  forgetConversation()
+  conversationNo.value = ''
+  messages.value = []
+  pendingAttempt = null
+  hasMoreHistory.value = false
+  historyCursor.value = null
+  notice.value = ''
+  historyError.value = '这段会话已无法查看，请开始新对话。'
+}
+
+function updateRecoveredUser(requestNo, fields) {
+  const user = messages.value.find((message) => message.role === 'USER'
+    && message.requestNo === requestNo)
+  if (user) Object.assign(user, fields)
+}
+
+function scheduleRecoveredRequest(number, requestNo, generation) {
+  recoveryTimer = window.setTimeout(() => {
+    recoveryTimer = null
+    pollRecoveredRequest(number, requestNo, generation)
+  }, RECOVERY_POLL_MS)
+}
+
+/** 刷新只恢复服务端已受理的轮次，不重新发送原请求或创造新的幂等键。 */
+async function pollRecoveredRequest(number, requestNo, generation) {
+  if (generation !== recoveryGeneration || conversationNo.value !== number) return
+  try {
+    const state = await getAiRequestStatus(number, requestNo)
+    if (generation !== recoveryGeneration || conversationNo.value !== number) return
+    const reply = terminalRecoveredReply(state, requestNo)
+    if (reply) {
+      mergeHistory([reply])
+      updateRecoveredUser(requestNo, {
+        status: state.status === 'FAILED' ? 'failed' : 'done',
+        error: state.status === 'FAILED' ? reply.failureMessage || reply.content : '',
+      })
+      stopRecoveredRequest()
+      notice.value = ''
+      await refreshHistory({ recover: false })
+      return
+    }
+    notice.value = '这条消息仍在处理中，页面会自动更新结果。'
+  } catch (error) {
+    if (generation !== recoveryGeneration || conversationNo.value !== number) return
+    if (error?.httpStatus === 401 || Number(error?.code) === 401) {
+      stopRecoveredRequest()
+      emit('unauthorized', error)
+      return
+    }
+    if (error?.httpStatus === 404) {
+      dropUnavailableConversation()
+      return
+    }
+    notice.value = '暂时无法查询本轮状态，正在自动重试。'
+  }
+  scheduleRecoveredRequest(number, requestNo, generation)
+}
+
+function startRecoveredRequest(candidate, number) {
+  if (recoveringRequestNo.value === candidate.requestNo) return
+  stopRecoveredRequest()
+  recoveringRequestNo.value = candidate.requestNo
+  updateRecoveredUser(candidate.requestNo, { status: 'sending', error: '' })
+  notice.value = '正在恢复本轮处理状态…'
+  pollRecoveredRequest(number, candidate.requestNo, recoveryGeneration)
+}
+
+async function refreshHistory({ recover = true } = {}) {
+  if (!viewActive || !conversationNo.value || historyLoading.value || isSending.value) return
+  const number = conversationNo.value
+  const generation = ++historyGeneration
   historyLoading.value = true
   historyError.value = ''
   try {
-    const page = await listAiMessages(conversationNo.value)
+    const page = await listAiMessages(number)
+    if (!viewActive || conversationNo.value !== number || generation !== historyGeneration) return
     mergeHistory(page.messages)
     hasMoreHistory.value = page.hasMore
     historyCursor.value = page.messages[0]?.sequenceNo ?? null
     scrollToLatest()
+    if (recover && !pendingAttempt && !isSending.value) {
+      const candidate = pendingRequestFromHistory(page.messages)
+      if (candidate && !messages.value.some((message) => message.role === 'ASSISTANT'
+        && message.requestNo === candidate.requestNo)) {
+        startRecoveredRequest(candidate, number)
+      } else if (recoveringRequestNo.value) {
+        stopRecoveredRequest()
+        notice.value = ''
+      }
+    }
   } catch (error) {
+    if (!viewActive || conversationNo.value !== number || generation !== historyGeneration) return
     if (error?.httpStatus === 401 || Number(error?.code) === 401) {
       emit('unauthorized', error)
     } else if (error?.httpStatus === 404) {
-      forgetConversation()
-      conversationNo.value = ''
-      messages.value = []
-      pendingAttempt = null
-      hasMoreHistory.value = false
-      historyCursor.value = null
-      historyError.value = '这段会话已无法查看，请开始新对话。'
+      dropUnavailableConversation()
     } else {
       historyError.value = error?.message || '历史记录加载失败'
     }
   } finally {
-    historyLoading.value = false
+    if (generation === historyGeneration) historyLoading.value = false
   }
 }
 
 async function loadOlderHistory() {
-  if (!conversationNo.value || historyLoading.value || !hasMoreHistory.value || historyCursor.value == null) return
+  if (!viewActive || !conversationNo.value || historyLoading.value || !hasMoreHistory.value || historyCursor.value == null) return
+  const number = conversationNo.value
+  const generation = ++historyGeneration
   const element = conversationElement.value
   const previousHeight = element?.scrollHeight || 0
   const previousTop = element?.scrollTop || 0
   historyLoading.value = true
   historyError.value = ''
   try {
-    const page = await listAiMessages(conversationNo.value, { beforeSequence: historyCursor.value })
+    const page = await listAiMessages(number, { beforeSequence: historyCursor.value })
+    if (!viewActive || conversationNo.value !== number || generation !== historyGeneration) return
     mergeHistory(page.messages)
     hasMoreHistory.value = page.hasMore && page.messages.length > 0
     historyCursor.value = page.messages[0]?.sequenceNo ?? historyCursor.value
     await nextTick()
     if (element) element.scrollTop = previousTop + element.scrollHeight - previousHeight
   } catch (error) {
+    if (!viewActive || conversationNo.value !== number || generation !== historyGeneration) return
     if (error?.httpStatus === 401 || Number(error?.code) === 401) emit('unauthorized', error)
     else historyError.value = error?.message || '更早的记录加载失败'
   } finally {
-    historyLoading.value = false
+    if (generation === historyGeneration) historyLoading.value = false
   }
 }
 
@@ -466,7 +579,10 @@ async function performAttempt() {
       onEvent(name, data) {
         if (name === 'turn.started') {
           attempt.requestNo = data.requestNo
-          updateUser(attempt.localId, { requestNo: data.requestNo })
+          updateUser(attempt.localId, {
+            requestNo: data.requestNo,
+            content: data.content || attempt.content,
+          })
         }
         if (name === 'answer.completed' || name === 'route.card' || name === 'place.choices'
           || name === 'route-check.choices') {
@@ -523,7 +639,7 @@ async function performAttempt() {
 
 function submit() {
   const content = draft.value.trim()
-  if (!content || isSending.value || historyLoading.value || pendingAttempt) return
+  if (!content || isSending.value || historyLoading.value || pendingAttempt || recoveringRequestNo.value) return
   if (content.length > 1000) {
     showToast('最多输入 1000 字')
     return
@@ -540,6 +656,7 @@ function submit() {
 function selectPlace(choice) {
   const options = activePlaceChoices.value
   if (!options || choiceExpired(options) || isSending.value || historyLoading.value || pendingAttempt
+    || recoveringRequestNo.value
     || !options.choices.some((item) => item.placeChoiceId === choice.placeChoiceId)) return
   const localId = ++nextLocalId
   const key = createIdempotencyKey()
@@ -557,6 +674,7 @@ function selectPlace(choice) {
 function selectRouteCheckMode(choice) {
   const options = activeRouteCheckChoices.value
   if (!options || choiceExpired(options) || isSending.value || historyLoading.value || pendingAttempt
+    || recoveringRequestNo.value
     || !options.choices.some((item) => item.choiceId === choice.choiceId)) return
   const localId = ++nextLocalId
   const key = createIdempotencyKey()
@@ -606,7 +724,10 @@ onMounted(() => {
   if (conversationNo.value) refreshHistory()
 })
 onBeforeUnmount(() => {
+  viewActive = false
+  historyGeneration += 1
   activeController?.abort()
+  stopRecoveredRequest()
   if (choiceClock) window.clearInterval(choiceClock)
 })
 </script>
@@ -696,7 +817,7 @@ onBeforeUnmount(() => {
             <div v-if="message.payload?.placeChoices" class="route-ai-place-choices">
               <button v-for="choice in message.payload.placeChoices.choices" :key="choice.placeChoiceId"
                 type="button" :disabled="message !== latestAssistant || choiceExpired(message.payload.placeChoices)
-                  || isSending || historyLoading || !!pendingAttempt"
+                  || isSending || historyLoading || !!pendingAttempt || !!recoveringRequestNo"
                 @click="selectPlace(choice)">
                 <strong>{{ choice.name }}</strong>
                 <span>{{ [choice.city, choice.address, choice.type].filter(Boolean).join(' · ') }}</span>
@@ -709,7 +830,7 @@ onBeforeUnmount(() => {
               <button v-for="choice in message.payload.routeCheckChoices.choices" :key="choice.choiceId"
                 type="button" :disabled="message !== latestAssistant
                   || choiceExpired(message.payload.routeCheckChoices)
-                  || isSending || historyLoading || !!pendingAttempt"
+                  || isSending || historyLoading || !!pendingAttempt || !!recoveringRequestNo"
                 @click="selectRouteCheckMode(choice)">
                 <strong>{{ choice.label }}</strong>
               </button>
@@ -748,7 +869,7 @@ onBeforeUnmount(() => {
 
     <p v-if="notice" class="route-ai-notice" role="alert">{{ notice }}</p>
     <form class="route-ai-composer" @submit.prevent="submit">
-      <input v-model="draft" type="text" maxlength="1000" :disabled="isSending || historyLoading || !!pendingAttempt"
+      <input v-model="draft" type="text" maxlength="1000" :disabled="isSending || historyLoading || !!pendingAttempt || !!recoveringRequestNo"
         placeholder="描述路线需求，例如：从德清到西溪湿地" aria-label="输入路线需求" />
       <button type="submit" :disabled="!canSend">{{ isSending ? '处理中' : '发送' }}</button>
     </form>
