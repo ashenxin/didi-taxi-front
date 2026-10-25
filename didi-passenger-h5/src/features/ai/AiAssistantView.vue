@@ -43,6 +43,7 @@ const RECOVERY_POLL_MS = 5000
 const suggestions = [
   '帮我规划从德清高速路口到西溪湿地的路线',
   '从杭州东站到西溪湿地怎么走？',
+  '杭州明天天气怎么样？',
 ]
 const canSend = computed(() => !!draft.value.trim() && !isSending.value && !historyLoading.value
   && !pendingAttempt && !recoveringRequestNo.value)
@@ -738,7 +739,7 @@ onBeforeUnmount(() => {
       <button type="button" class="route-ai-back" aria-label="返回首页" @click="back">‹</button>
       <div class="route-ai-headline">
         <strong>出行 AI 助手</strong>
-        <span>{{ conversationNo ? `会话 ${conversationNo}` : '说出起点和终点，开始规划' }}</span>
+        <span>{{ conversationNo ? `会话 ${conversationNo}` : '问路线，也可以问天气' }}</span>
       </div>
       <div class="route-ai-head-actions">
         <button type="button" class="route-ai-history"
@@ -780,8 +781,8 @@ onBeforeUnmount(() => {
       <div class="route-ai-intro">
         <span class="route-ai-avatar" aria-hidden="true">✦</span>
         <div class="route-ai-bubble route-ai-bubble--intro">
-          <strong>想怎么走，告诉我就行</strong>
-          <p>先说清起点和终点。我会向你确认地点，再展示真实路线与预计时间。</p>
+          <strong>路线和天气，都可以问我</strong>
+          <p>规划路线请说清起点和终点；也可以直接问天气，例如「杭州明天天气」。</p>
         </div>
       </div>
 
@@ -859,7 +860,7 @@ onBeforeUnmount(() => {
                 <p v-if="!message.routePreview" class="route-ai-summary-hint">历史记录仅保存路线摘要；继续问路线时，客服会核对是否仍有效。</p>
               </div>
             </template>
-            <small>内容由 AI 生成，路线信息以本次地图结果为准</small>
+            <small>内容由 AI 生成，请以本次地图或天气结果为准</small>
           </article>
         </div>
       </template>
@@ -870,7 +871,7 @@ onBeforeUnmount(() => {
     <p v-if="notice" class="route-ai-notice" role="alert">{{ notice }}</p>
     <form class="route-ai-composer" @submit.prevent="submit">
       <input v-model="draft" type="text" maxlength="1000" :disabled="isSending || historyLoading || !!pendingAttempt || !!recoveringRequestNo"
-        placeholder="描述路线需求，例如：从德清到西溪湿地" aria-label="输入路线需求" />
+        placeholder="问路线或天气，例如：从德清到西溪湿地 / 杭州明天天气" aria-label="输入路线或天气需求" />
       <button type="submit" :disabled="!canSend">{{ isSending ? '处理中' : '发送' }}</button>
     </form>
   </section>
