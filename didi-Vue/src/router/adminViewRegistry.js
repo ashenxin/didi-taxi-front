@@ -25,6 +25,9 @@ export const ADMIN_VIEW_REGISTRY = Object.freeze({
   'pricing/FareRuleListView.vue': pick('pricing/views/FareRuleListView.vue'),
   'pricing/FareRuleEditView.vue': pick('pricing/views/FareRuleEditView.vue'),
 
+  'vehicle-ai/VehicleSearchView.vue': pick('vehicle-ai/views/VehicleSearchView.vue'),
+  'vehicle-ai/VehicleModelListView.vue': pick('vehicle-ai/views/VehicleModelListView.vue'),
+
   'system/AdminUserListView.vue': pick('system/views/AdminUserListView.vue')
 })
 

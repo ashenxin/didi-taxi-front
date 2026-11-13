@@ -43,6 +43,20 @@ export function teardownAdminMenuRoutes() {
   resetAdminMenuRoutesState()
 }
 
+/**
+ * 应用挂载前预注册动态菜单路由，保证刷新深链时不会先被通配符重定向。
+ * 未登录时直接返回，由路由守卫继续处理登录跳转。
+ */
+export async function bootstrapAdminRoutes() {
+  if (!getAdminToken() || menuRoutesReady) return
+  if (!menuRoutesLoading) {
+    menuRoutesLoading = registerAdminMenuRoutes(router)
+      .then(() => { menuRoutesReady = true })
+      .finally(() => { menuRoutesLoading = null })
+  }
+  await menuRoutesLoading
+}
+
 router.beforeEach(async (to, _from, next) => {
   if (to.meta.public) {
     if (to.path === '/login' && getAdminToken()) {
@@ -57,17 +71,8 @@ router.beforeEach(async (to, _from, next) => {
     return
   }
   if (!menuRoutesReady) {
-    if (!menuRoutesLoading) {
-      menuRoutesLoading = registerAdminMenuRoutes(router)
-        .then(() => {
-          menuRoutesReady = true
-        })
-        .finally(() => {
-          menuRoutesLoading = null
-        })
-    }
     try {
-      await menuRoutesLoading
+      await bootstrapAdminRoutes()
     } catch (e) {
       console.error('[admin] 加载菜单失败', e)
       next({ path: '/login', query: { redirect: to.fullPath } })

@@ -1,6 +1,7 @@
 import { createApp } from 'vue'
 import {
   ElAlert,
+  ElAutocomplete,
   ElAside,
   ElButton,
   ElCard,
@@ -27,7 +28,9 @@ import {
   ElOption,
   ElPagination,
   ElPopconfirm,
+  ElProgress,
   ElRadio,
+  ElRadioButton,
   ElRadioGroup,
   ElSelect,
   ElSubMenu,
@@ -35,15 +38,17 @@ import {
   ElTableColumn,
   ElTag,
   ElTimeline,
-  ElTimelineItem
+  ElTimelineItem,
+  ElUpload
 } from 'element-plus'
 import 'element-plus/dist/index.css'
 import App from './App.vue'
-import router from './router'
+import router, { bootstrapAdminRoutes } from './router'
 import './styles.css'
 
 const elementComponents = [
   ElAlert,
+  ElAutocomplete,
   ElAside,
   ElButton,
   ElCard,
@@ -69,7 +74,9 @@ const elementComponents = [
   ElOption,
   ElPagination,
   ElPopconfirm,
+  ElProgress,
   ElRadio,
+  ElRadioButton,
   ElRadioGroup,
   ElSelect,
   ElSubMenu,
@@ -77,10 +84,15 @@ const elementComponents = [
   ElTableColumn,
   ElTag,
   ElTimeline,
-  ElTimelineItem
+  ElTimelineItem,
+  ElUpload
 ]
 
 const app = createApp(App)
 elementComponents.forEach((component) => app.component(component.name, component))
 app.directive('loading', ElLoading.directive)
-app.use(router).mount('#app')
+
+// 先注册动态菜单路由，再触发 router 的首次导航；否则刷新深链会先命中通配符。
+bootstrapAdminRoutes()
+  .catch((e) => console.error('[admin] 菜单预加载失败', e))
+  .finally(() => app.use(router).mount('#app'))
